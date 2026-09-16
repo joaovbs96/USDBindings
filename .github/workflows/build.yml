@@ -1,0 +1,171 @@
+# Builds the OpenUSD + MaterialX WASM SDK and the usd-wg-webview bindings on top
+# of it, from the pinned submodules in external/.
+#
+# Runs on demand only: a cold build takes hours and must never fire on push.
+name: build-wasm-bindings
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_materialx:
+        description: "Build USD without MaterialX (faster, breaks .mtlx layer references)"
+        type: boolean
+        default: false
+      emsdk_version:
+        description: "emsdk version to install and activate"
+        type: string
+        default: "latest"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350          # under the 6 hour hard cap, so logs survive
+
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Record pinned revisions
+        run: |
+          {
+            echo "### Pinned sources"
+            echo ""
+            echo "| submodule | revision |"
+            echo "|---|---|"
+            for m in openusd materialx usd-wg-webview; do
+              echo "| $m | \`$(git -C external/$m rev-parse HEAD)\` |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Disk before cleanup
+        run: |
+          {
+            echo ""
+            echo "### Runner"
+            echo ""
+            echo '```'
+            df -h /
+            echo "nproc=$(nproc)  ram=$(free -g | awk '/^Mem:/{print $2}')GB"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The image ships tens of GB of toolchains we do not need. Whether this is
+      # the difference between fitting and not is one of the things we measure.
+      - name: Free disk space
+        run: |
+          before=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL \
+                      /usr/local/share/powershell /usr/share/swift || true
+          sudo docker image prune --all --force || true
+          sudo apt-get clean
+          after=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+          {
+            echo ""
+            echo "Disk freed: ${before}G available -> ${after}G available"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake
+          cmake --version | head -1
+
+      - name: Cache emsdk
+        uses: actions/cache@v4
+        with:
+          path: ~/emsdk
+          key: emsdk-${{ inputs.emsdk_version }}-${{ runner.os }}
+
+      - name: Set up emsdk
+        run: |
+          if [ ! -d "$HOME/emsdk/.git" ]; then
+            git clone https://github.com/emscripten-core/emsdk.git "$HOME/emsdk"
+          fi
+          cd "$HOME/emsdk"
+          ./emsdk install ${{ inputs.emsdk_version }}
+          ./emsdk activate ${{ inputs.emsdk_version }}
+          . ./emsdk_env.sh
+          {
+            echo ""
+            echo "emcc: \`$(emcc --version | head -1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # One step: emsdk_env.sh only affects the shell that sourced it. The disk
+      # watcher runs alongside so running out of space is distinguishable from a
+      # compile failure in the log.
+      - name: Build SDK and bindings
+        id: build
+        run: |
+          . "$HOME/emsdk/emsdk_env.sh"
+          ( while sleep 120; do echo "[disk] $(df -h / | tail -1)"; done ) &
+          watcher=$!
+          set +e
+          python3 build.py --root "$HOME/usdwasm" -j "$(nproc)" \
+            ${{ inputs.skip_materialx && '--skip-materialx' || '' }}
+          code=$?
+          set -e
+          kill $watcher 2>/dev/null || true
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit $code
+
+      - name: Result
+        if: always()
+        run: |
+          out="$HOME/usdwasm/out"
+          {
+            echo ""
+            echo "### Result"
+            echo ""
+            echo "| item | value |"
+            echo "|---|---|"
+            echo "| exit code | ${{ steps.build.outputs.exit_code || 'failed before build' }} |"
+            if [ -f "$out/usdWebViewBindingsModule.wasm" ]; then
+              echo "| wasm bytes | $(stat -c%s "$out/usdWebViewBindingsModule.wasm") (upstream ships 19733084) |"
+            else
+              echo "| wasm | MISSING |"
+            fi
+            if [ -f "$HOME/usdwasm/install/lib/libusd_usdMtlx.a" ]; then
+              echo "| MaterialX in USD | yes |"
+            else
+              echo "| MaterialX in USD | no |"
+            fi
+            echo "| tree size | $(du -sh "$HOME/usdwasm" 2>/dev/null | cut -f1) |"
+            echo "| disk remaining | $(df -h / | tail -1 | awk '{print $4}') |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # When it fails, the first compile errors are the entire point: put them in
+      # the summary so the answer is readable without downloading anything.
+      - name: First errors
+        if: failure()
+        run: |
+          {
+            echo ""
+            echo "### First compile errors"
+            echo '```'
+            grep -hE "error:|fatal error:|No such file or directory" \
+              "$HOME/usdwasm/logs/"*.log 2>/dev/null | head -40 || echo "(none found in logs)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Artifact storage is small, so keep the ~20MB module and the logs only,
+      # never the multi-GB SDK.
+      - name: Upload bindings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usd-webview-bindings-wasm
+          path: ~/usdwasm/out/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: ~/usdwasm/logs/
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,16 @@
+# Build output lives outside the repo by default (--root), but keep these in case
+# someone points --root here.
+build/
+install/
+out/
+logs/
+.phases/
+
+# Built artifacts are never committed: CI produces them from pinned sources.
+*.wasm
+*.a
+*.o
+
+__pycache__/
+*.pyc
+.DS_Store

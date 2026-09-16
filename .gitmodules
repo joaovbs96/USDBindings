@@ -1,0 +1,9 @@
+[submodule "external/openusd"]
+	path = external/openusd
+	url = https://github.com/PixarAnimationStudios/OpenUSD.git
+[submodule "external/materialx"]
+	path = external/materialx
+	url = https://github.com/AcademySoftwareFoundation/MaterialX.git
+[submodule "external/usd-wg-webview"]
+	path = external/usd-wg-webview
+	url = https://github.com/usd-wg/usd-wg-webview.git
