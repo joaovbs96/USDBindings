@@ -176,7 +176,27 @@ def build_materialx(ctx):
     if not cfg.exists():
         raise SystemExit("MaterialX installed but %s is missing." % cfg)
     say("MaterialX config at %s" % cfg, "ok")
+    _neutralize_x11_dependency(cfg / "MaterialXConfig.cmake")
     mark(ctx, "materialx")
+
+
+def _neutralize_x11_dependency(config_path):
+    """MaterialX's config template guards X11 with `if(UNIX AND NOT APPLE)`, and
+    the Emscripten toolchain sets UNIX=1, so every wasm build emits a config that
+    hard-requires X11 and breaks find_package(MaterialX) off Linux."""
+    if not config_path.exists():
+        say("no MaterialXConfig.cmake to patch at %s" % config_path, "warn")
+        return
+    text = config_path.read_text(encoding="utf-8", errors="replace")
+    needle = "if(UNIX AND NOT APPLE)"
+    if needle not in text:
+        say("MaterialXConfig.cmake has no X11 guard, nothing to patch", "ok")
+        return
+    # OpenUSD calls find_package(MaterialX REQUIRED) with no components, so the
+    # RenderGlsl/OpenGL branch inside never runs. Only the X11 line blocks us.
+    patched = text.replace(needle, "if(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)", 1)
+    config_path.write_text(patched, encoding="utf-8")
+    say("patched MaterialXConfig.cmake to skip the X11 dependency under Emscripten", "ok")
 
 
 def build_usd(ctx, with_materialx):
@@ -189,18 +209,22 @@ def build_usd(ctx, with_materialx):
     # and still pulls OpenSubdiv into requiredDependencies, which a -D flag
     # cannot do. PXR_BUILD_USD_IMAGING is then forced back on below, where it is
     # only a -D flag with no dependencies attached.
-    cmd = [sys.executable, str(script),
-           "--build-target", "wasm",
-           "--imaging",
-           "--no-tests", "--no-examples", "--no-tutorials", "--no-docs",
-           "--build-args", "USD,-DPXR_BUILD_USD_IMAGING=ON"]
+    # --build-args takes nargs="*", so every value must ride on ONE occurrence.
+    # Repeating the flag drops the earlier entries, which silently left
+    # PXR_BUILD_USD_IMAGING and PXR_ENABLE_MATERIALX_SUPPORT at OFF.
+    build_args = ["USD,-DPXR_BUILD_USD_IMAGING=ON"]
     if with_materialx:
         # MaterialX installs into the same prefix build_usd.py passes as
         # CMAKE_FIND_ROOT_PATH for wasm, so find_package resolves under the
         # emscripten toolchain's restricted lookup. MaterialX_DIR is explicit too.
         mtlx_cfg = ctx.install / "lib" / "cmake" / "MaterialX"
-        cmd += ["--build-args", "USD,-DPXR_ENABLE_MATERIALX_SUPPORT=ON",
-                "--build-args", "USD,-DMaterialX_DIR=" + str(mtlx_cfg)]
+        build_args += ["USD,-DPXR_ENABLE_MATERIALX_SUPPORT=ON",
+                       "USD,-DMaterialX_DIR=" + mtlx_cfg.as_posix()]
+    cmd = [sys.executable, str(script),
+           "--build-target", "wasm",
+           "--imaging",
+           "--no-tests", "--no-examples", "--no-tutorials", "--no-docs",
+           "--build-args"] + build_args
     cmd += ["-j", str(ctx.jobs), str(ctx.install)]
     t0 = time.time()
     run(cmd, ctx.logs / "usd.log")
@@ -266,6 +290,9 @@ def report(ctx, emcc_ver, total_s):
 def main():
     ap = argparse.ArgumentParser(
         description="Build the OpenUSD + MaterialX WASM SDK and the usd-wg-webview bindings.")
+    # Avoid any root whose path contains a backslash escape sequence such as \U:
+    # OpenUSD's cmake macros stringify INCLUDE_DIRS and CMake then rejects it
+    # with "Invalid character escape". C:\Users\... is exactly such a path.
     ap.add_argument("--root", default="~/usdwasm", help="working directory (default: ~/usdwasm)")
     ap.add_argument("-j", "--jobs", type=int, default=None, help="parallel jobs")
     ap.add_argument("--force", action="append", choices=PHASES, help="redo a phase (repeatable)")
