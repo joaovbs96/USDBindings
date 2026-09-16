@@ -63,14 +63,41 @@ MaterialX inside USD only serves the `usdMtlx` file format plugin, which lets US
 compose `.mtlx` files as layers. Shader compilation happens elsewhere, so a
 consumer can render with a different MaterialX build.
 
+## Imaging on wasm
+
+`build_usd.py` refuses the literal argument `--usd-imaging` on wasm targets:
+
+```python
+if "--usd-imaging" in sys.argv:
+    PrintError("Cannot build Usd Imaging for wasm build targets")
+    sys.exit(1)
+```
+
+`--imaging` is not on that rejection list, and unlike `--usd-imaging` it survives
+the `and not targetWasm` clause that computes `buildImaging`. That distinction
+matters for more than the flag: `buildImaging` being true is what adds
+**OpenSubdiv** to the dependency list, and no `-D` override can substitute for a
+library that never gets built. `PXR_BUILD_USD_IMAGING` is gated off separately,
+but it only emits a `-D` flag with no dependencies attached, so `--build-args`
+forces it back on.
+
+The bindings need both: they link `libusd_usdImaging.a`,
+`libusd_usdSkelImaging.a`, `usdVolImaging`, `usdProcImaging` and `usdHydra`, and
+include 12 `usdImaging` headers. Upstream's own `wasm-sdk.md` records
+`PXR_BUILD_IMAGING=ON` and `PXR_BUILD_USD_IMAGING=ON` in the SDK they ship, so
+this configuration is known to have worked at least once.
+
 ## Open questions this repository exists to answer
 
-1. Do the usd-wg-webview sources compile unmodified against OpenUSD `v26.08`?
+1. Does `PXR_BUILD_USD_IMAGING=ON` actually compile for wasm? It is gated off in
+   `build_usd.py` with no supported escape hatch, which may mean untested rather
+   than broken.
+2. Do the usd-wg-webview sources compile unmodified against OpenUSD `v26.08`?
    The two fragile includes are `pxr/usd/sdf/usdzResolver.h` (private, not
    installed by the SDK) and `pxr/imaging/hd/unitTestNullRenderPass.h`
    (test support), out of 123 pxr headers.
-2. Does a cold build fit a standard GitHub runner's disk and the 6 hour job cap?
-3. Does the resulting module behave like the one upstream ships?
+3. Does a cold build fit a standard GitHub runner's disk and the 6 hour job cap?
+4. Does the resulting module behave like the one upstream ships?
 
 ## Licences
 

@@ -176,10 +176,16 @@ def build_usd(ctx, with_materialx):
         say("usd: already done, skipping", "ok")
         return
     script = SUBMODULES["openusd"] / "build_scripts" / "build_usd.py"
+    # --imaging, NOT --usd-imaging: build_usd.py hard-rejects the literal string
+    # "--usd-imaging" in sys.argv on wasm targets. --imaging escapes that guard
+    # and still pulls OpenSubdiv into requiredDependencies, which a -D flag
+    # cannot do. PXR_BUILD_USD_IMAGING is then forced back on below, where it is
+    # only a -D flag with no dependencies attached.
     cmd = [sys.executable, str(script),
            "--build-target", "wasm",
-           "--usd-imaging",
-           "--no-tests", "--no-examples", "--no-tutorials", "--no-docs"]
+           "--imaging",
+           "--no-tests", "--no-examples", "--no-tutorials", "--no-docs",
+           "--build-args", "USD,-DPXR_BUILD_USD_IMAGING=ON"]
     if with_materialx:
         # MaterialX installs into the same prefix build_usd.py passes as
         # CMAKE_FIND_ROOT_PATH for wasm, so find_package resolves under the
