@@ -212,7 +212,14 @@ def build_usd(ctx, with_materialx):
     # --build-args takes nargs="*", so every value must ride on ONE occurrence.
     # Repeating the flag drops the earlier entries, which silently left
     # PXR_BUILD_USD_IMAGING and PXR_ENABLE_MATERIALX_SUPPORT at OFF.
-    build_args = ["USD,-DPXR_BUILD_USD_IMAGING=ON"]
+    # GL off: garch has platform branches for APPLE/X11/WIN32 only, so under
+    # Emscripten its source lists come out empty and the generate step dies on
+    # "No SOURCES given to target: garch". Its own guard skips it when GL is off,
+    # and glf, hgiGL, hdx and hdSt self-gate the same way. The libraries the
+    # bindings link (hd, hdsi, hdGp, hdar, hgi, pxOsd, usdImaging,
+    # usdSkelImaging) have no GL gate, so they still build.
+    build_args = ["USD,-DPXR_BUILD_USD_IMAGING=ON",
+                  "USD,-DPXR_ENABLE_GL_SUPPORT=OFF"]
     if with_materialx:
         # MaterialX installs into the same prefix build_usd.py passes as
         # CMAKE_FIND_ROOT_PATH for wasm, so find_package resolves under the
