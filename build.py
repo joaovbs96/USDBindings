@@ -82,8 +82,12 @@ def run(cmd, log_path, cwd=None):
 
 
 def which_or_die(tool, hint):
-    if not shutil.which(tool):
+    """Resolve a tool to a full path. Windows CreateProcess does not apply
+    PATHEXT, so a bare name like 'emcc' fails even when emcc.exe is on PATH."""
+    resolved = shutil.which(tool)
+    if not resolved:
         raise SystemExit("Missing '%s' on PATH. %s" % (tool, hint))
+    return resolved
 
 
 def emsdk_hint():
@@ -93,8 +97,10 @@ def emsdk_hint():
 
 
 def emcmake_cmd():
-    """build_usd.py uses emcmake.bat on Windows and emcmake elsewhere."""
-    return "emcmake.bat" if IS_WINDOWS else "emcmake"
+    """build_usd.py uses emcmake.bat on Windows and emcmake elsewhere. Resolved
+    to a full path because CreateProcess ignores PATHEXT."""
+    name = "emcmake.bat" if IS_WINDOWS else "emcmake"
+    return shutil.which(name) or name
 
 
 def check_prereqs():
@@ -105,14 +111,16 @@ def check_prereqs():
                 "Run: git submodule update --init --recursive" % (name, path))
     which_or_die("git", "Install git.")
     which_or_die("cmake", "Install CMake 3.20+.")
-    which_or_die("emcc", emsdk_hint())
-    which_or_die(emcmake_cmd(), emsdk_hint())
+    emcc = which_or_die("emcc", emsdk_hint())
+    which_or_die("emcmake.bat" if IS_WINDOWS else "emcmake", emsdk_hint())
     if IS_WINDOWS:
         # build_usd.py defaults Windows wasm builds to Ninja and exits without it,
         # because the Visual Studio generator cannot build emscripten projects.
+        # It also invokes emcmake.bat/emmake.bat literally, while current emsdk
+        # ships only .exe launchers, so .bat shims must be on PATH ahead of them.
         which_or_die("ninja", "Windows wasm builds need Ninja on PATH.")
         say("Windows host: using emcmake.bat and the Ninja generator", "ok")
-    ver = subprocess.run(["emcc", "--version"], capture_output=True, text=True)
+    ver = subprocess.run([emcc, "--version"], capture_output=True, text=True)
     blob = (ver.stdout or ver.stderr or "").strip()
     first = blob.splitlines()[0] if blob else "unknown"
     say("emcc: %s" % first, "ok")

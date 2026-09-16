@@ -34,8 +34,17 @@ Output: `~/usdwasm/out/usdWebViewBindingsModule.{js,wasm}`.
 Phases are resumable. `--force usd` redoes one, `--clean` resets, and
 `--skip-materialx` builds without MaterialX for a faster first pass.
 
-Windows works too: `build_usd.py` calls `emcmake.bat`/`emmake.bat` there and
-auto-selects the Ninja generator, so Ninja must be on PATH.
+Windows works too, with two caveats. `build_usd.py` auto-selects the Ninja
+generator there, so Ninja must be on PATH. It also invokes `emcmake.bat` and
+`emmake.bat` by those literal names, while current emsdk ships only `.exe`
+launchers (`emcmake.exe`, `emmake.exe`) and `cmd.exe` will not substitute one for
+the other. Put `.bat` shims that forward to the `.exe` on PATH ahead of emsdk,
+for example:
+
+```bat
+@echo off
+"C:\path\to\emsdk\upstream\emscripten\emcmake.exe" %*
+```
 
 ## CI
 
