@@ -164,19 +164,31 @@ Both anchors are asserted to match exactly once, so a moved webview pin fails
 loudly rather than silently building without the feature. The right long-term
 home for this is a pull request upstream.
 
-## Keeping the link static
+## OpenSubdiv must be static
 
-`build.py` also drops the `target_compile_options(... -fPIC)` line from the
-bindings CMakeLists. That flag is meaningless for a static wasm main module,
-but emcc 6.x propagates it into the link: the resulting module carries a
-`dylink` section and GOT relocations, and its glue grows past three times the
-size with `dynamicLibraries`/`loadDynamicLibrary` machinery. The module upstream
-ships has none of that, and a relocatable module is also loaded differently,
-which is a plausible cause of stage loads failing in a browser.
+`build.py` passes `--build-args OpenSubdiv,-DBUILD_SHARED_LIBS=OFF`, and that
+one flag decides whether the module works at all.
 
-Every other flag in that file is upstream's own, so the only differences between
-our build and theirs are the emcc version and the OpenUSD version. Dropping the
-flag makes the output static regardless of emcc version drift.
+`build_usd.py` tries to make OpenSubdiv static for wasm with
+`-DBUILD_SHARED_LIB=OFF`, singular, which OpenSubdiv ignores, so the install
+ends up with `libosdCPU.so.3.6.1`. That file is a wasm dylib, and emcc treats
+any dylib on the link line as a reason to switch on dynamic linking:
+
+```python
+# link.py
+if options.dylibs and not settings.MAIN_MODULE:
+  default_setting('MAIN_MODULE', 2)
+```
+
+The result is a relocatable module: a `dylink` section, GOT relocations, glue
+more than three times the size carrying `loadDynamicLibrary` machinery, and a
+startup path that fetches `libosdCPU.so.3.6.1`. Nothing ships that file, so the
+fetch 404s and the module never initialises. In a browser this looks like stage
+loads simply failing.
+
+Upstream's own module has no `dylink` section, so their older emcc did not make
+this choice. Forcing OpenSubdiv static removes the dylib and the link stays
+static regardless of emcc version.
 
 ## The one OpenUSD source patch
 
