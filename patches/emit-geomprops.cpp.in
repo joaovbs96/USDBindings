@@ -6,8 +6,11 @@
         int geompropCount = 0;
         for (const UsdGeomPrimvar& pv : primvarsApi.GetPrimvarsWithValues()) {
             const std::string name = pv.GetPrimvarName().GetString();
-            if (name == "st" || name == "normals" ||
-                name == "displayColor" || name == "displayOpacity") {
+            // st and normals already ride their own channels. displayColor is
+            // NOT excluded: it is authored constant, uniform or vertex depending
+            // on the asset, and the uniform/vertex cases need the real stream.
+            // A constant primvar with no values flattens empty and drops out below.
+            if (name == "st" || name == "normals") {
                 continue;
             }
             // Renderer-specific metadata, never a shading stream.
@@ -19,8 +22,14 @@
             int itemSize = 0;
             if (pvType == SdfValueTypeNames->FloatArray ||
                 pvType == SdfValueTypeNames->Float) {
-                if (_ExpandFloatPrimvarToCorners(
-                        pv, *topo, triangleOrder, timeCode, &data)) {
+                if (_ExpandScalarPrimvarToCorners<float>(
+                        pv, *topo, triangleOrder, timeCode, HdTypeFloat, &data)) {
+                    itemSize = 1;
+                }
+            } else if (pvType == SdfValueTypeNames->IntArray ||
+                       pvType == SdfValueTypeNames->Int) {
+                if (_ExpandScalarPrimvarToCorners<int>(
+                        pv, *topo, triangleOrder, timeCode, HdTypeInt32, &data)) {
                     itemSize = 1;
                 }
             } else if (pvType == SdfValueTypeNames->Float2Array ||

@@ -311,7 +311,7 @@ def _add_geomprop_streams(source_root):
     if not path.exists():
         raise SystemExit("expected %s: is the webview submodule checked out?" % path)
     text = path.read_text(encoding="utf-8", errors="replace")
-    if "_ExpandFloatPrimvarToCorners" in text:
+    if "_ExpandScalarPrimvarToCorners" in text:
         say("unifiedDriver.cpp already emits geomprops, nothing to patch", "ok")
         return
 

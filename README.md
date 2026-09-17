@@ -146,8 +146,19 @@ resampling is not rewritten. But it indexes `v[c]`, so it cannot instantiate on
 scalar `float`, and most geomprop streams are float. So the patch adds a scalar
 sibling next to it and then a loop that emits `entry.geomprops`, each entry
 carrying `name`, `itemSize`, `interpolation` and a `Float32Array` view in the
-same corner order as `positions`. `st`, `normals`, `displayColor`,
-`displayOpacity` and renderer-private `karma:`/`ri:` primvars are skipped.
+same corner order as `positions`. Only `st` and `normals` are skipped, since
+they ride their own channels, along with renderer-private `karma:` and `ri:`
+primvars. `displayColor` is deliberately **not** skipped: across the sample
+assets it is authored `constant` (empty), `uniform` and `vertex` depending on
+the mesh, so the uniform and vertex cases need the real stream rather than the
+single-value constant the driver already reports. A constant primvar with no
+values flattens to empty and drops out on its own.
+
+Scalar integer primvars are widened to float. MaterialX declares an integer
+geomprop as `in int` plus a non-`flat` `out int` varying, which is not valid
+GLSL ES 3.0 and would additionally need `vertexAttribIPointer`; every consumer
+seen so far feeds the value straight into `ND_convert_integer_float`, so the
+widening is lossless in practice and avoids both problems.
 
 Both anchors are asserted to match exactly once, so a moved webview pin fails
 loudly rather than silently building without the feature. The right long-term

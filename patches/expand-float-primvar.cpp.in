@@ -1,14 +1,18 @@
     // Scalar sibling of _ExpandPrimvarToCorners: that template indexes v[c],
-    // so it cannot instantiate on float, and most geompropvalue streams are
-    // float. Same four interpolation modes, same corner order.
-    bool _ExpandFloatPrimvarToCorners(
+    // so it cannot instantiate on a scalar, and most geompropvalue streams are
+    // scalar. Same four interpolation modes, same corner order. Integers are
+    // widened to float: an int vertex attribute would need a flat varying and
+    // vertexAttribIPointer, and every consumer converts to float anyway.
+    template <typename ScalarType>
+    bool _ExpandScalarPrimvarToCorners(
         const UsdGeomPrimvar& primvar,
         const TriangulatedTopology& topo,
         const std::vector<int>& triangleOrder,
         UsdTimeCode timeCode,
+        HdType hdType,
         std::vector<float>* out) const
     {
-        VtArray<float> values;
+        VtArray<ScalarType> values;
         if (!primvar || !primvar.ComputeFlattened(&values, timeCode) ||
             values.empty()) {
             return false;
@@ -18,7 +22,7 @@
         out->reserve(topo.triangleIndices.size() * 3);
 
         auto pushValue = [&](size_t index) {
-            out->push_back(values[std::min(index, values.size() - 1)]);
+            out->push_back(float(values[std::min(index, values.size() - 1)]));
         };
 
         if (interpolation == UsdGeomTokens->faceVarying) {
@@ -32,17 +36,17 @@
             if (meshUtil.ComputeTriangulatedFaceVaryingPrimvar(
                     values.cdata(),
                     static_cast<int>(values.size()),
-                    HdTypeFloat,
+                    hdType,
                     &triangulated) == HdMeshComputationResult::Success &&
-                triangulated.IsHolding<VtArray<float>>()) {
-                const VtArray<float> cornerValues =
-                    triangulated.Get<VtArray<float>>();
+                triangulated.IsHolding<VtArray<ScalarType>>()) {
+                const VtArray<ScalarType> cornerValues =
+                    triangulated.Get<VtArray<ScalarType>>();
                 if (!cornerValues.empty()) {
                     for (int tri : triangleOrder) {
                         for (int corner = 0; corner < 3; ++corner) {
                             const size_t index = std::min(
                                 size_t(tri) * 3 + corner, cornerValues.size() - 1);
-                            out->push_back(cornerValues[index]);
+                            out->push_back(float(cornerValues[index]));
                         }
                     }
                     return true;
