@@ -15,6 +15,10 @@ on:
         description: "emsdk version to install and activate"
         type: string
         default: "latest"
+      sdk_cache_bust:
+        description: "Any new value here forces a fresh SDK build instead of reusing the cache"
+        type: string
+        default: ""
 
 jobs:
   build:
@@ -38,6 +42,18 @@ jobs:
               echo "| $m | \`$(git -C external/$m rev-parse HEAD)\` |"
             done
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Keyed on the SDK inputs only. The webview pin and build.py are left out on
+      # purpose: bindings changes must not throw away a 34 minute USD build, which
+      # is the whole point. Change sdk_cache_bust when the SDK build flags change.
+      - name: Compute SDK cache key
+        id: sdkkey
+        run: |
+          sdk="$(python3 build.py --sdk-fingerprint)"
+          extra="mtlx=${{ inputs.skip_materialx }}|salt=${{ inputs.sdk_cache_bust }}"
+          digest="$(printf '%s|%s' "$sdk" "$extra" | sha256sum | cut -c1-12)"
+          echo "key=usdsdk-${{ runner.os }}-$sdk-$digest" >> "$GITHUB_OUTPUT"
+          echo "SDK cache key: usdsdk-${{ runner.os }}-$sdk-$digest"
 
       - name: Disk before cleanup
         run: |
@@ -70,11 +86,14 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build cmake
+          sudo apt-get install -y ninja-build cmake ccache
           cmake --version | head -1
 
-      - name: Cache emsdk
-        uses: actions/cache@v4
+      # Split like the others: a plain cache step does not save when the job
+      # fails, which would re-download and re-install emsdk on every failed run.
+      - name: Restore emsdk
+        id: emsdkcache
+        uses: actions/cache/restore@v4
         with:
           path: ~/emsdk
           key: emsdk-${{ inputs.emsdk_version }}-${{ runner.os }}
@@ -96,8 +115,51 @@ jobs:
       # One step: emsdk_env.sh only affects the shell that sourced it. The disk
       # watcher runs alongside so running out of space is distinguishable from a
       # compile failure in the log.
+      - name: Save emsdk
+        if: steps.emsdkcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/emsdk
+          key: emsdk-${{ inputs.emsdk_version }}-${{ runner.os }}
+
+      # ccache is content addressed, so an older cache is always safe to reuse:
+      # a changed source simply misses. That makes restore-keys correct here,
+      # unlike the SDK cache, where a partial match would be wrong.
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          # The repo shares a 10GB cache budget with emsdk and the SDK prefix,
+          # and the SDK cache is the expensive one to lose. Keep this modest.
+          ccache -M 2G
+          ccache -z
+          ccache --version | head -1
+
+      - name: Restore SDK cache
+        id: sdkcache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/usdwasm/install
+            ~/usdwasm/.phases
+          key: ${{ steps.sdkkey.outputs.key }}
+
       - name: Build SDK and bindings
         id: build
+        env:
+          EM_COMPILER_WRAPPER: ccache
+          # Restoring emsdk and the SDK from cache resets every mtime, so the
+          # default mtime based checks would miss on essentially everything.
+          # Hashing content instead is both more correct and far more reusable.
+          CCACHE_COMPILERCHECK: content
+          CCACHE_SLOPPINESS: include_file_mtime,include_file_ctime,locale
+          CCACHE_BASEDIR: ${{ github.workspace }}
         run: |
           . "$HOME/emsdk/emsdk_env.sh"
           ( while sleep 120; do echo "[disk] $(df -h / | tail -1)"; done ) &
@@ -111,6 +173,37 @@ jobs:
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit $code
 
+      # build_usd.py puts its download and build trees INSIDE the install prefix,
+      # which is most of its size and is never needed again once the phase marker
+      # says the SDK is done. Runner-only, nothing outside ~/usdwasm is touched.
+      - name: Prepare SDK cache
+        id: sdkprep
+        if: always()
+        run: |
+          rm -rf "$HOME/usdwasm/install/build" "$HOME/usdwasm/install/src" "$HOME/usdwasm/build/materialx" || true
+          if [ -f "$HOME/usdwasm/.phases/usd" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "sdk cache candidate: $(du -sh "$HOME/usdwasm/install" | cut -f1)"
+          fi
+
+      # Saved even when the bindings step failed: that is exactly the case worth
+      # caching. Split restore/save because actions/cache does not save on failure.
+      - name: Save SDK cache
+        if: always() && steps.sdkprep.outputs.ok == 'true' && steps.sdkcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/usdwasm/install
+            ~/usdwasm/.phases
+          key: ${{ steps.sdkkey.outputs.key }}
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ github.run_id }}
+
       - name: Result
         if: always()
         run: |
@@ -122,6 +215,8 @@ jobs:
             echo "| item | value |"
             echo "|---|---|"
             echo "| exit code | ${{ steps.build.outputs.exit_code || 'failed before build' }} |"
+            echo "| SDK cache | ${{ steps.sdkcache.outputs.cache-hit == 'true' && 'reused' || 'built fresh' }} |"
+            echo "| ccache | $(ccache -s 2>/dev/null | awk -F': *' '/[Hh]its/{print $2; exit}') hits |"
             if [ -f "$out/usdWebViewBindingsModule.wasm" ]; then
               echo "| wasm bytes | $(stat -c%s "$out/usdWebViewBindingsModule.wasm") (upstream ships 19733084) |"
             else

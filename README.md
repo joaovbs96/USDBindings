@@ -53,6 +53,31 @@ hours. It records the pinned revisions, measures runner disk before and after
 cleanup, watches disk during the build, and uploads the module plus the logs.
 On failure it puts the first compile errors directly into the job summary.
 
+The SDK is cached between runs, so only the first run pays the full USD build.
+The key comes from `build.py --sdk-fingerprint`, which hashes the OpenUSD and
+MaterialX pins together with the text of the functions that build them. So
+editing the bindings phase cannot throw away a good SDK, and editing the SDK
+phase cannot silently reuse one built with different flags. A `sdk_cache_bust`
+input is there as a manual override, but nothing routine needs it.
+
+Compilation is cached separately with ccache, via `EM_COMPILER_WRAPPER`, which
+emcc honours for every phase. ccache is content addressed, so a stale entry
+cannot be used by mistake: a changed source simply misses. That is why it is the
+one cache here restored with `restore-keys`, and why it is saved on every run
+regardless of outcome.
+
+Every cache here uses separate restore and save steps, because `actions/cache`
+does not save when a job fails, and a failed job is exactly the case worth
+caching: a good SDK followed by a broken bindings build, or an emsdk install
+that should not be repeated. emsdk is banked as soon as it is set up, the SDK
+once its phase marker exists, and ccache unconditionally.
+
+The three together share a 10GB per repository budget, which is why ccache is
+capped at 2G: the SDK prefix is the expensive one to lose, and it stays warm
+because every run reads it. Before saving, the job deletes `install/build` and `install/src`,
+which `build_usd.py` puts inside the install prefix and which are dead weight
+once the phase marker says the SDK is done.
+
 ## Why MaterialX is built separately
 
 `build_usd.py` force-disables MaterialX on wasm targets:

@@ -22,6 +22,8 @@ Why this is not just `build_usd.py --build-target wasm`:
 """
 
 import argparse
+import ast
+import hashlib
 import os
 import platform
 import shutil
@@ -38,6 +40,11 @@ SUBMODULES = {
 }
 
 PHASES = ("materialx", "usd", "bindings")
+# Functions whose text defines how the SDK is built, hashed into the CI cache
+# key. Editing the bindings phase must not invalidate a cached SDK, and editing
+# the SDK phase must not silently reuse one built with different flags.
+SDK_KEY_FUNCS = ("_neutralize_x11_dependency", "_teach_hgi_about_wasm",
+                 "build_materialx", "build_usd")
 UPSTREAM_WASM_BYTES = 19733084  # what usd-wg-webview ships, for comparison
 IS_WINDOWS = platform.system() == "Windows"
 
@@ -137,6 +144,27 @@ def revisions():
         except Exception:
             out[name] = "unknown"
     return out
+
+
+def sdk_fingerprint():
+    """Hash the SDK build logic together with the OpenUSD and MaterialX pins.
+    The bindings phase is excluded on purpose, so iterating there keeps the
+    cached SDK, while changing an SDK build flag invalidates it by itself."""
+    src = Path(__file__).resolve().read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    found = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in SDK_KEY_FUNCS:
+            found[node.name] = ast.get_source_segment(src, node) or ""
+    missing = set(SDK_KEY_FUNCS) - set(found)
+    if missing:
+        raise SystemExit("SDK_KEY_FUNCS names functions that no longer exist: %s"
+                         % ", ".join(sorted(missing)))
+    revs = revisions()
+    parts = [found[name] for name in sorted(found)]
+    parts.append("openusd=" + revs["openusd"])
+    parts.append("materialx=" + revs["materialx"])
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
 def done(ctx, phase):
@@ -339,7 +367,14 @@ def main():
     ap.add_argument("--clean", action="store_true", help="delete build/, out/ and markers first")
     ap.add_argument("--skip-materialx", action="store_true",
                     help="build USD without MaterialX (breaks .mtlx layer references)")
+    ap.add_argument("--sdk-fingerprint", action="store_true",
+                    help="print a hash of the SDK build inputs and exit (for CI cache keys)")
     args = ap.parse_args()
+
+    # Before check_prereqs: CI computes the cache key long before emsdk exists.
+    if args.sdk_fingerprint:
+        print(sdk_fingerprint())
+        return
 
     ctx = Ctx(args)
     emcc_ver = check_prereqs()
