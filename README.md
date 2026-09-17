@@ -164,17 +164,28 @@ first and, when that succeeds, records `PXR_FIND_OPENSUBDIV_IN_CONFIG=ON` in
 afterwards. So the bindings configure passes `CMAKE_FIND_ROOT_PATH`,
 `CMAKE_PREFIX_PATH` and explicit `OpenSubdiv_DIR` and `MaterialX_DIR`.
 
-## Open questions this repository exists to answer
+## Answers
 
-1. Does `PXR_BUILD_USD_IMAGING=ON` actually compile for wasm? It is gated off in
-   `build_usd.py` with no supported escape hatch, which may mean untested rather
-   than broken.
-2. Do the usd-wg-webview sources compile unmodified against OpenUSD `v26.08`?
-   The two fragile includes are `pxr/usd/sdf/usdzResolver.h` (private, not
-   installed by the SDK) and `pxr/imaging/hd/unitTestNullRenderPass.h`
-   (test support), out of 123 pxr headers.
-3. Does a cold build fit a standard GitHub runner's disk and the 6 hour job cap?
-4. Does the resulting module behave like the one upstream ships?
+First green run: 2026-09-17, 64.9 min wall clock on a standard `ubuntu-latest`
+runner, emcc 6.0.9.
+
+1. **Does `PXR_BUILD_USD_IMAGING=ON` compile for wasm?** Yes, with the one line
+   `hgi.cpp` patch above. It was untested, not broken: nothing else in the
+   imaging stack needed changing once GL support was off.
+2. **Do the usd-wg-webview sources compile unmodified against `v26.08`?** Yes.
+   All 11 translation units built with no patches and no missing headers,
+   including the two fragile private includes. The only diagnostic is a
+   `-Winconsistent-missing-override` warning from USD's own `hd/meshTopology.h`.
+3. **Does a cold build fit a free runner?** Comfortably. 0.9 GB tree, 115 GB
+   disk left, 65 of the 350 minute budget.
+4. **Does the module behave like the one upstream ships?** Still open. Sizes are
+   within 1%: 19,931,285 bytes against upstream's 19,733,084. Different emcc and
+   a known-good OpenUSD revision explain a delta of that order, but behavioural
+   parity needs the module exercised against real stages.
+
+The link step resolving `libusd_usdImaging.a` also confirms the
+`PXR_BUILD_USD_IMAGING=ON` override reached cmake, despite `build_usd.py`
+printing `UsdImaging Off` in its pre-override summary.
 
 ## Licences
 
