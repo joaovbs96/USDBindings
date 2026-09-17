@@ -164,6 +164,15 @@ jobs:
             ~/usdwasm/.phases
           key: ${{ steps.sdkkey.outputs.key }}
 
+      # The SDK cache carries the phase markers. The bindings marker must never
+      # survive a restore: build.py would skip the phase, emit no module, and
+      # the patches it applies would never run.
+      - name: Force the bindings phase
+        run: |
+          rm -rf "$HOME/usdwasm/.phases/bindings" "$HOME/usdwasm/out"
+          echo "markers kept:"
+          ls -1 "$HOME/usdwasm/.phases" 2>/dev/null || echo "(none)"
+
       - name: Build SDK and bindings
         id: build
         env:
@@ -195,6 +204,7 @@ jobs:
         if: always()
         run: |
           rm -rf "$HOME/usdwasm/install/build" "$HOME/usdwasm/install/src" "$HOME/usdwasm/build/materialx" || true
+          rm -f "$HOME/usdwasm/.phases/bindings"
           if [ -f "$HOME/usdwasm/.phases/usd" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
             echo "sdk cache candidate: $(du -sh "$HOME/usdwasm/install" | cut -f1)"
@@ -267,7 +277,7 @@ jobs:
         with:
           name: usd-webview-bindings-wasm
           path: ~/usdwasm/out/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
       - name: Upload logs
