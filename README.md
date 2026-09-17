@@ -118,6 +118,21 @@ that `PXR_ENABLE_GL_SUPPORT=OFF` excludes. It only has to compile.
 The patch refuses to apply if the dispatch is not shaped as expected, so moving
 the OpenUSD pin fails loudly instead of silently building something else.
 
+## Finding the SDK's own dependencies from the bindings
+
+The Emscripten toolchain points every `find_*` call at its own sysroot, so a
+package built into our install prefix is invisible unless the prefix is named
+explicitly. `build_usd.py` hits this too and works around it by setting
+`CMAKE_FIND_ROOT_PATH` for its configure, citing emscripten issue 13310.
+
+The installed `pxrConfig.cmake` re-runs `find_dependency` for OpenSubdiv, TBB
+and MaterialX, so the bindings configure needs the same treatment. OpenSubdiv is
+the one that bites: `Packages.cmake` tries `find_package(OpenSubdiv 3 CONFIG)`
+first and, when that succeeds, records `PXR_FIND_OPENSUBDIV_IN_CONFIG=ON` in
+`pxrConfig.cmake`, which makes config mode mandatory for every consumer
+afterwards. So the bindings configure passes `CMAKE_FIND_ROOT_PATH`,
+`CMAKE_PREFIX_PATH` and explicit `OpenSubdiv_DIR` and `MaterialX_DIR`.
+
 ## Open questions this repository exists to answer
 
 1. Does `PXR_BUILD_USD_IMAGING=ON` actually compile for wasm? It is gated off in

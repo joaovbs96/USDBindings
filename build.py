@@ -283,6 +283,13 @@ def build_bindings(ctx):
          "-DCMAKE_BUILD_TYPE=Release",
          "-Dpxr_DIR=" + str(ctx.install),
          "-DTBB_DIR=" + str(ctx.install / "lib" / "cmake" / "TBB"),
+         # The Emscripten toolchain restricts find_package to its own sysroot,
+         # so pxrConfig.cmake's find_dependency calls need the install prefix
+         # named explicitly. build_usd.py does the same for its own configure.
+         "-DCMAKE_FIND_ROOT_PATH=" + str(ctx.install),
+         "-DCMAKE_PREFIX_PATH=" + str(ctx.install),
+         "-DOpenSubdiv_DIR=" + str(ctx.install / "lib" / "cmake" / "OpenSubdiv"),
+         "-DMaterialX_DIR=" + str(ctx.install / "lib" / "cmake" / "MaterialX"),
          "-DUSD_WEBVIEW_OPENUSD_SOURCE_DIR=" + str(SUBMODULES["openusd"]),
          "-DCMAKE_INSTALL_PREFIX=" + str(ctx.out)],
         ctx.logs / "bindings.log")
