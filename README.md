@@ -164,6 +164,20 @@ Both anchors are asserted to match exactly once, so a moved webview pin fails
 loudly rather than silently building without the feature. The right long-term
 home for this is a pull request upstream.
 
+## Keeping the link static
+
+`build.py` also drops the `target_compile_options(... -fPIC)` line from the
+bindings CMakeLists. That flag is meaningless for a static wasm main module,
+but emcc 6.x propagates it into the link: the resulting module carries a
+`dylink` section and GOT relocations, and its glue grows past three times the
+size with `dynamicLibraries`/`loadDynamicLibrary` machinery. The module upstream
+ships has none of that, and a relocatable module is also loaded differently,
+which is a plausible cause of stage loads failing in a browser.
+
+Every other flag in that file is upstream's own, so the only differences between
+our build and theirs are the emcc version and the OpenUSD version. Dropping the
+flag makes the output static regardless of emcc version drift.
+
 ## The one OpenUSD source patch
 
 `build.py` patches a single line of `pxr/imaging/hgi/hgi.cpp` before building.

@@ -299,6 +299,26 @@ def build_usd(ctx, with_materialx):
     mark(ctx, "usd")
 
 
+def _drop_pic_from_bindings(source_root):
+    """Stop the bindings linking as a relocatable module.
+
+    Their CMakeLists compiles with -fPIC, which is meaningless for a static
+    wasm main module. emcc 6.x propagates it into the link and emits a dylink
+    section plus GOT relocations, which upstream's own module does not have."""
+    path = source_root / "native" / "usd-webview-bindings" / "CMakeLists.txt"
+    if not path.exists():
+        raise SystemExit("expected %s: is the webview submodule checked out?" % path)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    needle = "target_compile_options(usdWebViewBindingsModule PRIVATE -fPIC)\n"
+    if needle not in text:
+        say("bindings CMakeLists has no -fPIC line, nothing to patch", "ok")
+        return
+    if text.count(needle) != 1:
+        raise SystemExit("expected exactly one -fPIC line in the bindings CMakeLists")
+    path.write_text(text.replace(needle, "", 1), encoding="utf-8")
+    say("patched bindings CMakeLists to drop -fPIC so the link stays static", "ok")
+
+
 def _add_geomprop_streams(source_root):
     """Teach the draw path to emit every primvar a geompropvalue node may read.
 
@@ -339,6 +359,7 @@ def build_bindings(ctx):
         say("bindings: already done, skipping", "ok")
         return
     _add_geomprop_streams(SUBMODULES["webview"])
+    _drop_pic_from_bindings(SUBMODULES["webview"])
     src = SUBMODULES["webview"] / "native" / "usd-webview-bindings"
     bld = ctx.build / "bindings"
     # USD_WEBVIEW_OPENUSD_SOURCE_DIR must be overridden: upstream defaults it to a
