@@ -1,0 +1,81 @@
+    // Scalar sibling of _ExpandPrimvarToCorners: that template indexes v[c],
+    // so it cannot instantiate on float, and most geompropvalue streams are
+    // float. Same four interpolation modes, same corner order.
+    bool _ExpandFloatPrimvarToCorners(
+        const UsdGeomPrimvar& primvar,
+        const TriangulatedTopology& topo,
+        const std::vector<int>& triangleOrder,
+        UsdTimeCode timeCode,
+        std::vector<float>* out) const
+    {
+        VtArray<float> values;
+        if (!primvar || !primvar.ComputeFlattened(&values, timeCode) ||
+            values.empty()) {
+            return false;
+        }
+        const TfToken interpolation = primvar.GetInterpolation();
+        out->clear();
+        out->reserve(topo.triangleIndices.size() * 3);
+
+        auto pushValue = [&](size_t index) {
+            out->push_back(values[std::min(index, values.size() - 1)]);
+        };
+
+        if (interpolation == UsdGeomTokens->faceVarying) {
+            HdMeshTopology topology(
+                PxOsdOpenSubdivTokens->none,
+                HdTokens->rightHanded,
+                topo.faceVertexCounts,
+                topo.faceVertexIndices);
+            HdMeshUtil meshUtil(&topology, SdfPath::AbsoluteRootPath());
+            VtValue triangulated;
+            if (meshUtil.ComputeTriangulatedFaceVaryingPrimvar(
+                    values.cdata(),
+                    static_cast<int>(values.size()),
+                    HdTypeFloat,
+                    &triangulated) == HdMeshComputationResult::Success &&
+                triangulated.IsHolding<VtArray<float>>()) {
+                const VtArray<float> cornerValues =
+                    triangulated.Get<VtArray<float>>();
+                if (!cornerValues.empty()) {
+                    for (int tri : triangleOrder) {
+                        for (int corner = 0; corner < 3; ++corner) {
+                            const size_t index = std::min(
+                                size_t(tri) * 3 + corner, cornerValues.size() - 1);
+                            out->push_back(cornerValues[index]);
+                        }
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        if (interpolation == UsdGeomTokens->vertex ||
+            interpolation == UsdGeomTokens->varying) {
+            for (int tri : triangleOrder) {
+                const GfVec3i& triangle = topo.triangleIndices[tri];
+                for (int corner = 0; corner < 3; ++corner) {
+                    pushValue(size_t(triangle[corner]));
+                }
+            }
+            return true;
+        }
+
+        if (interpolation == UsdGeomTokens->uniform) {
+            for (int tri : triangleOrder) {
+                const size_t face = size_t(HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(
+                    topo.primitiveParams[tri]));
+                for (int corner = 0; corner < 3; ++corner) {
+                    pushValue(face);
+                }
+            }
+            return true;
+        }
+
+        for (size_t i = 0; i < topo.triangleIndices.size() * 3; ++i) {
+            pushValue(0);
+        }
+        return true;
+    }
+

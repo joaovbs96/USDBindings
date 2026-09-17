@@ -127,6 +127,32 @@ include 12 `usdImaging` headers. Upstream's own `wasm-sdk.md` records
 `PXR_BUILD_IMAGING=ON` and `PXR_BUILD_USD_IMAGING=ON` in the SDK they ship, so
 this configuration is known to have worked at least once.
 
+## The geomprop patch, and why this repo exists
+
+`build.py` also patches `unifiedDriver.cpp` before building the bindings, from
+`patches/`. This is the first change that makes our module behave differently
+from the one upstream ships, and it is the reason for building our own.
+
+The draw path expands only `st` and `normals` into the per-corner vertex stream,
+so a MaterialX `geompropvalue` node reading anything else gets no data and the
+viewer binds zeros. Procedural materials then render, but not as authored. The
+MaterialEggs sample library is the clear case: `egg_cadbury` carries `rest`
+(`float3`, vertex), `mask` and `specmask` (`float`, vertex) and `crosssection`
+(`float`, uniform) on every render mesh, and its materials read all four.
+
+Their own `_ExpandPrimvarToCorners` already handles all four interpolation modes
+correctly, including `uniform` via `DecodeFaceIndexFromCoarseFaceParam`, so the
+resampling is not rewritten. But it indexes `v[c]`, so it cannot instantiate on
+scalar `float`, and most geomprop streams are float. So the patch adds a scalar
+sibling next to it and then a loop that emits `entry.geomprops`, each entry
+carrying `name`, `itemSize`, `interpolation` and a `Float32Array` view in the
+same corner order as `positions`. `st`, `normals`, `displayColor`,
+`displayOpacity` and renderer-private `karma:`/`ri:` primvars are skipped.
+
+Both anchors are asserted to match exactly once, so a moved webview pin fails
+loudly rather than silently building without the feature. The right long-term
+home for this is a pull request upstream.
+
 ## The one OpenUSD source patch
 
 `build.py` patches a single line of `pxr/imaging/hgi/hgi.cpp` before building.

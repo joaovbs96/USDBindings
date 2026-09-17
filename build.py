@@ -33,6 +33,7 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
+PATCHES = REPO / "patches"
 SUBMODULES = {
     "openusd": REPO / "external" / "openusd",
     "materialx": REPO / "external" / "materialx",
@@ -298,10 +299,46 @@ def build_usd(ctx, with_materialx):
     mark(ctx, "usd")
 
 
+def _add_geomprop_streams(source_root):
+    """Teach the draw path to emit every primvar a geompropvalue node may read.
+
+    Upstream expands only st and normals, so procedural MaterialX materials bind
+    zeros for their other streams. Their own _ExpandPrimvarToCorners already
+    handles all four interpolation modes but indexes v[c], so it cannot
+    instantiate on float; most geomprop streams are float. A scalar sibling is
+    added beside it, then a loop emits entry.geomprops."""
+    path = source_root / "native" / "usd-webview-bindings" / "src" / "unifiedDriver.cpp"
+    if not path.exists():
+        raise SystemExit("expected %s: is the webview submodule checked out?" % path)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if "_ExpandFloatPrimvarToCorners" in text:
+        say("unifiedDriver.cpp already emits geomprops, nothing to patch", "ok")
+        return
+
+    helper_anchor = ("    template <typename VecType>\n"
+                     "    bool _ExpandFlattenedFaceVaryingPrimvarToCorners(")
+    uv_anchor = ('            entry.set("uvs", _Float32View(_drawBuffers.back()));\n'
+                 "        }\n")
+    for label, anchor in (("scalar helper", helper_anchor), ("geomprop loop", uv_anchor)):
+        if text.count(anchor) != 1:
+            raise SystemExit(
+                "unifiedDriver.cpp %s anchor matched %d times, expected 1: the "
+                "webview pin has moved. Refusing to patch blindly."
+                % (label, text.count(anchor)))
+
+    helper = (PATCHES / "expand-float-primvar.cpp.in").read_text(encoding="utf-8")
+    loop = (PATCHES / "emit-geomprops.cpp.in").read_text(encoding="utf-8")
+    text = text.replace(helper_anchor, helper + helper_anchor, 1)
+    text = text.replace(uv_anchor, uv_anchor + loop, 1)
+    path.write_text(text, encoding="utf-8")
+    say("patched unifiedDriver.cpp to emit geomprop primvar streams", "ok")
+
+
 def build_bindings(ctx):
     if done(ctx, "bindings"):
         say("bindings: already done, skipping", "ok")
         return
+    _add_geomprop_streams(SUBMODULES["webview"])
     src = SUBMODULES["webview"] / "native" / "usd-webview-bindings"
     bld = ctx.build / "bindings"
     # USD_WEBVIEW_OPENUSD_SOURCE_DIR must be overridden: upstream defaults it to a

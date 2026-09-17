@@ -1,0 +1,55 @@
+
+        // Every remaining primvar a MaterialX geompropvalue node could read,
+        // expanded to the same corner stream as positions/normals/uvs. Without
+        // this the viewer binds zeros and procedural materials look unauthored.
+        emscripten::val geomprops = emscripten::val::array();
+        int geompropCount = 0;
+        for (const UsdGeomPrimvar& pv : primvarsApi.GetPrimvarsWithValues()) {
+            const std::string name = pv.GetPrimvarName().GetString();
+            if (name == "st" || name == "normals" ||
+                name == "displayColor" || name == "displayOpacity") {
+                continue;
+            }
+            // Renderer-specific metadata, never a shading stream.
+            if (name.rfind("karma:", 0) == 0 || name.rfind("ri:", 0) == 0) {
+                continue;
+            }
+            const SdfValueTypeName pvType = pv.GetTypeName();
+            std::vector<float> data;
+            int itemSize = 0;
+            if (pvType == SdfValueTypeNames->FloatArray ||
+                pvType == SdfValueTypeNames->Float) {
+                if (_ExpandFloatPrimvarToCorners(
+                        pv, *topo, triangleOrder, timeCode, &data)) {
+                    itemSize = 1;
+                }
+            } else if (pvType == SdfValueTypeNames->Float2Array ||
+                       pvType == SdfValueTypeNames->TexCoord2fArray) {
+                if (_ExpandPrimvarToCorners<GfVec2f>(
+                        pv, *topo, triangleOrder, timeCode, 2, &data)) {
+                    itemSize = 2;
+                }
+            } else if (pvType == SdfValueTypeNames->Float3Array ||
+                       pvType == SdfValueTypeNames->Vector3fArray ||
+                       pvType == SdfValueTypeNames->Color3fArray ||
+                       pvType == SdfValueTypeNames->Normal3fArray ||
+                       pvType == SdfValueTypeNames->Point3fArray) {
+                if (_ExpandPrimvarToCorners<GfVec3f>(
+                        pv, *topo, triangleOrder, timeCode, 3, &data)) {
+                    itemSize = 3;
+                }
+            }
+            if (itemSize == 0 || data.empty()) {
+                continue;
+            }
+            emscripten::val gp = emscripten::val::object();
+            gp.set("name", name);
+            gp.set("itemSize", itemSize);
+            gp.set("interpolation", pv.GetInterpolation().GetString());
+            _drawBuffers.push_back(std::move(data));
+            gp.set("data", _Float32View(_drawBuffers.back()));
+            geomprops.set(geompropCount++, gp);
+        }
+        if (geompropCount > 0) {
+            entry.set("geomprops", geomprops);
+        }
