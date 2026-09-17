@@ -96,6 +96,28 @@ include 12 `usdImaging` headers. Upstream's own `wasm-sdk.md` records
 `PXR_BUILD_IMAGING=ON` and `PXR_BUILD_USD_IMAGING=ON` in the SDK they ship, so
 this configuration is known to have worked at least once.
 
+## The one OpenUSD source patch
+
+`build.py` patches a single line of `pxr/imaging/hgi/hgi.cpp` before building.
+It is applied to the checked-out submodule at build time rather than committed,
+so the pin stays exactly `v26.08` and the change is visible in one place.
+
+`_MakeNewPlatformDefaultHgi()` chooses a backend from `ARCH_OS_LINUX`,
+`ARCH_OS_DARWIN` or `ARCH_OS_WINDOWS` and otherwise hits `#error Unknown
+Platform`. Emscripten gets neither: `arch/defines.h` defines `ARCH_OS_WASM_VM`
+in the first `#if`, so the `#elif` that would define `ARCH_OS_LINUX` never runs.
+This is the only `#error Unknown Platform` in the whole `pxr` tree, and OpenUSD
+`dev` has the identical unfixed code, so it is not a stale-pin problem.
+
+The patch adds an `ARCH_OS_WASM_VM` branch yielding `""`, which is what the
+existing `#else` already does: an empty type name finds no plugin, so the
+function returns `nullptr` through its own error path. Nothing in this
+configuration ever calls it, since every caller is `hdSt` or `hdx` test support
+that `PXR_ENABLE_GL_SUPPORT=OFF` excludes. It only has to compile.
+
+The patch refuses to apply if the dispatch is not shaped as expected, so moving
+the OpenUSD pin fails loudly instead of silently building something else.
+
 ## Open questions this repository exists to answer
 
 1. Does `PXR_BUILD_USD_IMAGING=ON` actually compile for wasm? It is gated off in

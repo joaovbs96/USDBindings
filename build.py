@@ -199,10 +199,35 @@ def _neutralize_x11_dependency(config_path):
     say("patched MaterialXConfig.cmake to skip the X11 dependency under Emscripten", "ok")
 
 
+def _teach_hgi_about_wasm(source_root):
+    """hgi.cpp picks a default backend from ARCH_OS_LINUX/DARWIN/WINDOWS and hits
+    "#error Unknown Platform" otherwise, but Emscripten defines ARCH_OS_WASM_VM.
+    Its existing #else branch already yields "" and a null Hgi, which suits us."""
+    path = source_root / "pxr" / "imaging" / "hgi" / "hgi.cpp"
+    if not path.exists():
+        raise SystemExit("expected %s: is the OpenUSD submodule checked out?" % path)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if "ARCH_OS_WASM_VM" in text:
+        say("hgi.cpp already knows about wasm, nothing to patch", "ok")
+        return
+    needle = '#elif defined(ARCH_OS_WINDOWS)\n            "HgiGL";\n        #else'
+    if needle not in text:
+        raise SystemExit("hgi.cpp platform dispatch is not shaped as expected, so "
+                         "the OpenUSD pin has moved. Refusing to patch blindly.")
+    # Nothing in this configuration calls it: every caller is hdSt/hdx test
+    # support, which PXR_ENABLE_GL_SUPPORT=OFF excludes. It only has to compile.
+    replacement = needle.replace(
+        '        #else',
+        '        #elif defined(ARCH_OS_WASM_VM)\n            "";\n        #else')
+    path.write_text(text.replace(needle, replacement, 1), encoding="utf-8")
+    say("patched hgi.cpp to accept ARCH_OS_WASM_VM as a platform", "ok")
+
+
 def build_usd(ctx, with_materialx):
     if done(ctx, "usd"):
         say("usd: already done, skipping", "ok")
         return
+    _teach_hgi_about_wasm(SUBMODULES["openusd"])
     script = SUBMODULES["openusd"] / "build_scripts" / "build_usd.py"
     # --imaging, NOT --usd-imaging: build_usd.py hard-rejects the literal string
     # "--usd-imaging" in sys.argv on wasm targets. --imaging escapes that guard
