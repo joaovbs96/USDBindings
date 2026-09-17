@@ -16,14 +16,17 @@ on:
         type: string
         default: "latest"
       sdk_cache_bust:
-        description: "Any new value here forces a fresh SDK build instead of reusing the cache"
-        type: string
-        default: ""
+        description: "Rebuild the SDK from scratch and replace the cached one"
+        type: boolean
+        default: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 350          # under the 6 hour hard cap, so logs survive
+    permissions:
+      contents: read
+      actions: write              # to drop the SDK cache entry on a forced rebuild
 
     steps:
       - name: Checkout with submodules
@@ -50,10 +53,10 @@ jobs:
         id: sdkkey
         run: |
           sdk="$(python3 build.py --sdk-fingerprint)"
-          extra="mtlx=${{ inputs.skip_materialx }}|salt=${{ inputs.sdk_cache_bust }}"
-          digest="$(printf '%s|%s' "$sdk" "$extra" | sha256sum | cut -c1-12)"
-          echo "key=usdsdk-${{ runner.os }}-$sdk-$digest" >> "$GITHUB_OUTPUT"
-          echo "SDK cache key: usdsdk-${{ runner.os }}-$sdk-$digest"
+          digest="$(printf 'mtlx=%s' "${{ inputs.skip_materialx }}" | sha256sum | cut -c1-8)"
+          key="usdsdk-${{ runner.os }}-$sdk-$digest"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "SDK cache key: $key"
 
       - name: Disk before cleanup
         run: |
@@ -141,8 +144,19 @@ jobs:
           ccache -z
           ccache --version | head -1
 
+      # Cache entries are immutable, so a forced rebuild has to delete the old one
+      # or it could never be saved under the same key. Skipping the restore alone
+      # would rebuild for this run only and leave the stale entry in place.
+      - name: Drop cached SDK
+        if: inputs.sdk_cache_bust
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache delete "${{ steps.sdkkey.outputs.key }}" || echo "nothing cached under that key"
+
       - name: Restore SDK cache
         id: sdkcache
+        if: ${{ !inputs.sdk_cache_bust }}
         uses: actions/cache/restore@v4
         with:
           path: |

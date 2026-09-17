@@ -57,8 +57,14 @@ The SDK is cached between runs, so only the first run pays the full USD build.
 The key comes from `build.py --sdk-fingerprint`, which hashes the OpenUSD and
 MaterialX pins together with the text of the functions that build them. So
 editing the bindings phase cannot throw away a good SDK, and editing the SDK
-phase cannot silently reuse one built with different flags. A `sdk_cache_bust`
-input is there as a manual override, but nothing routine needs it.
+phase cannot silently reuse one built with different flags.
+
+A `sdk_cache_bust` checkbox forces a rebuild anyway, for the case where the
+cached SDK is suspect rather than stale. It is deliberately not part of the key:
+a checkbox only ever produces one value, so the second forced run would restore
+the cache the first one wrote. Instead it deletes the entry and skips the
+restore, so the rebuild is saved under the same key and becomes the new
+baseline. That is also why the job needs `actions: write`.
 
 Compilation is cached separately with ccache, via `EM_COMPILER_WRAPPER`, which
 emcc honours for every phase. ccache is content addressed, so a stale entry
