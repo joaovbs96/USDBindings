@@ -1,7 +1,11 @@
 # Builds the OpenUSD + MaterialX WASM SDK and the usd-wg-webview bindings on top
 # of it, from the pinned submodules in external/.
 #
-# Runs on demand only: a cold build takes hours and must never fire on push.
+# Runs on demand, and on every tag push (a cold build takes hours; it must
+# never fire on an ordinary push to a branch). A tag push carries no
+# workflow_dispatch inputs, so every ${{ inputs.* }} use below is resolved
+# through the job-level env block instead, which falls back to the same
+# defaults declared here.
 name: build-wasm-bindings
 
 on:
@@ -19,6 +23,9 @@ on:
         description: "Rebuild the SDK from scratch and replace the cached one"
         type: boolean
         default: false
+  push:
+    tags:
+      - "v*"
 
 jobs:
   build:
@@ -27,6 +34,13 @@ jobs:
     permissions:
       contents: read
       actions: write              # to drop the SDK cache entry on a forced rebuild
+    env:
+      # workflow_dispatch inputs are undefined on a tag push, so every input
+      # is read through these instead, which fall back to the same defaults
+      # declared on workflow_dispatch above.
+      SKIP_MATERIALX: ${{ inputs.skip_materialx || false }}
+      EMSDK_VERSION: ${{ inputs.emsdk_version || 'latest' }}
+      SDK_CACHE_BUST: ${{ inputs.sdk_cache_bust || false }}
 
     steps:
       - name: Checkout with submodules
@@ -53,7 +67,7 @@ jobs:
         id: sdkkey
         run: |
           sdk="$(python3 build.py --sdk-fingerprint)"
-          digest="$(printf 'mtlx=%s|emsdk=%s' "${{ inputs.skip_materialx }}" "${{ inputs.emsdk_version }}" | sha256sum | cut -c1-8)"
+          digest="$(printf 'mtlx=%s|emsdk=%s' "$SKIP_MATERIALX" "$EMSDK_VERSION" | sha256sum | cut -c1-8)"
           key="usdsdk-${{ runner.os }}-$sdk-$digest"
           echo "key=$key" >> "$GITHUB_OUTPUT"
           echo "SDK cache key: $key"
@@ -99,7 +113,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/emsdk
-          key: emsdk-${{ inputs.emsdk_version }}-${{ runner.os }}
+          key: emsdk-${{ env.EMSDK_VERSION }}-${{ runner.os }}
 
       - name: Set up emsdk
         run: |
@@ -107,8 +121,8 @@ jobs:
             git clone https://github.com/emscripten-core/emsdk.git "$HOME/emsdk"
           fi
           cd "$HOME/emsdk"
-          ./emsdk install ${{ inputs.emsdk_version }}
-          ./emsdk activate ${{ inputs.emsdk_version }}
+          ./emsdk install "$EMSDK_VERSION"
+          ./emsdk activate "$EMSDK_VERSION"
           . ./emsdk_env.sh
           {
             echo ""
@@ -123,7 +137,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/emsdk
-          key: emsdk-${{ inputs.emsdk_version }}-${{ runner.os }}
+          key: emsdk-${{ env.EMSDK_VERSION }}-${{ runner.os }}
 
       # ccache is content addressed, so an older cache is always safe to reuse:
       # a changed source simply misses. That makes restore-keys correct here,
@@ -148,7 +162,7 @@ jobs:
       # or it could never be saved under the same key. Skipping the restore alone
       # would rebuild for this run only and leave the stale entry in place.
       - name: Drop cached SDK
-        if: inputs.sdk_cache_bust
+        if: env.SDK_CACHE_BUST == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -156,7 +170,7 @@ jobs:
 
       - name: Restore SDK cache
         id: sdkcache
-        if: ${{ !inputs.sdk_cache_bust }}
+        if: env.SDK_CACHE_BUST != 'true'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -188,13 +202,29 @@ jobs:
           ( while sleep 120; do echo "[disk] $(df -h / | tail -1)"; done ) &
           watcher=$!
           set +e
-          python3 build.py --root "$HOME/usdwasm" -j "$(nproc)" \
-            ${{ inputs.skip_materialx && '--skip-materialx' || '' }}
+          extra_args=()
+          [ "$SKIP_MATERIALX" = "true" ] && extra_args+=(--skip-materialx)
+          python3 build.py --root "$HOME/usdwasm" -j "$(nproc)" "${extra_args[@]}"
           code=$?
           set -e
           kill $watcher 2>/dev/null || true
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit $code
+
+      # Only reached when the build step above exited 0. Exercises the actual
+      # patch fixes against the module the job just produced.
+      - name: Run fixtures
+        run: |
+          out="$HOME/usdwasm/out"
+          for fixture in tests/*.mjs; do
+            echo "== $fixture =="
+            node "$fixture" "$out"
+          done
+
+      # Guards against the module silently coming back as a dynamically
+      # linked side module, which loads under Node but not in the browser.
+      - name: Check wasm is statically linked
+        run: node scripts/check-wasm-imports.mjs "$HOME/usdwasm/out"
 
       # build_usd.py puts its download and build trees INSIDE the install prefix,
       # which is most of its size and is never needed again once the phase marker
@@ -288,3 +318,72 @@ jobs:
           path: ~/usdwasm/logs/
           if-no-files-found: warn
           retention-days: 14
+
+  # Only for a tag push. Publishes the module the build job just produced,
+  # plus the upstream JS wrapper usdWebViewBindings.js (that file is not part
+  # of build.py's output; it is maintained by usd-wg-webview and lives at
+  # external/usd-wg-webview/public/usd-webview-bindings/usdWebViewBindings.js),
+  # a checksum manifest, and a licence bundle, so MaterialX Playground's
+  # scripts/vendor.mjs can pin the release by URL and sha256 like every other
+  # download it fetches.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download bindings artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: usd-webview-bindings-wasm
+          path: dist
+
+      - name: Assemble release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cp dist/usdWebViewBindingsModule.js release/
+          cp dist/usdWebViewBindingsModule.wasm release/
+          cp external/usd-wg-webview/public/usd-webview-bindings/usdWebViewBindings.js release/
+
+          {
+            echo "Third-party licences for the USDBindings release ${GITHUB_REF#refs/tags/}"
+            echo
+            echo "== USDBindings (this repository) =="
+            cat LICENSE
+            echo
+            cat NOTICE
+            echo
+            echo "== OpenUSD (external/openusd) =="
+            cat external/openusd/LICENSE.txt
+            echo
+            echo "== MaterialX (external/materialx) =="
+            cat external/materialx/LICENSE
+            echo
+            echo "== usd-wg-webview (external/usd-wg-webview) =="
+            cat external/usd-wg-webview/LICENSE
+          } > release/LICENSES.txt
+
+          ( cd release && sha256sum usdWebViewBindings.js usdWebViewBindingsModule.js usdWebViewBindingsModule.wasm > SHA256SUMS )
+          cat release/SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" \
+            release/usdWebViewBindings.js \
+            release/usdWebViewBindingsModule.js \
+            release/usdWebViewBindingsModule.wasm \
+            release/SHA256SUMS \
+            release/LICENSES.txt \
+            --repo "${{ github.repository }}" \
+            --title "$tag" \
+            --notes "USD + MaterialX WASM bindings built from this tag. Verify downloads against SHA256SUMS."
