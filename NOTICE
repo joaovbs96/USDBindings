@@ -1,0 +1,31 @@
+USDBindings
+
+Copyright 2026 joaovbs96
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this project's own files except in compliance with the License. You may
+obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+This project builds and packages code from the following third-party
+components:
+
+1. OpenUSD
+   Path: external/openusd
+   Licence: Apache License 2.0, with Pixar's modified trademark section
+   (see external/openusd/LICENSE.txt)
+
+2. MaterialX
+   Path: external/materialx
+   Licence: Apache License 2.0
+   (see external/materialx/LICENSE)
+
+3. usd-wg-webview
+   Path: external/usd-wg-webview
+   Licence: BSD 3-Clause
+   (see external/usd-wg-webview/LICENSE)
+
+A distribution of the built WebAssembly artifact bundles code from all
+three components and must carry all three licence texts alongside this
+NOTICE.
