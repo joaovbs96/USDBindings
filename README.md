@@ -58,6 +58,16 @@ linking imports (no `dylink` section, no `dynamicLibraries` entry, no
 GOT-relocation imports), and an import table limited to the `env` and
 `wasi_snapshot_preview1` modules.
 
+Releases are built by CI (`.github/workflows/build.yml`) from a pushed tag
+`v<major>.<minor>.<patch>`, after the fixtures below and the static checks
+above both pass. The GitHub Release for that tag carries
+`usdWebViewBindings.js`, `usdWebViewBindingsModule.js`,
+`usdWebViewBindingsModule.wasm`, a `SHA256SUMS` file with their hashes, and a
+`LICENSES.txt` bundling this repository's licence and notice with OpenUSD's,
+MaterialX's, and usd-wg-webview's. MaterialX Playground's `scripts/vendor.mjs`
+pins a specific release by its asset URL and the matching `SHA256SUMS` hash,
+the same way it pins every other third-party download.
+
 ## Tests
 
 Five fixtures live in `tests/`, one `.mjs` runner paired with one `.usda`
