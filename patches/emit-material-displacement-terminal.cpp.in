@@ -1,0 +1,68 @@
+UsdPrim
+_FindInlineMaterialXTerminalShaderPrim(
+    const UsdPrim& materialPrim,
+    const std::string& terminalName)
+{
+    // Preserve the authored MaterialX terminal instead of guessing a shader
+    // from traversal order. NodeGraph output forwarding is resolved by the
+    // same connection walk used for surface terminals.
+    const TfToken preferredOutputs[] = {
+        TfToken("outputs:mtlx:" + terminalName),
+        TfToken("outputs:kma:" + terminalName),
+    };
+
+    for (const TfToken& outputName : preferredOutputs) {
+        UsdAttribute terminalOutput = materialPrim.GetAttribute(outputName);
+        SdfPathVector connections;
+        if (terminalOutput &&
+            terminalOutput.GetConnections(&connections) &&
+            !connections.empty()) {
+            UsdPrim terminalShader =
+                _ResolveConnectedPrim(materialPrim.GetStage(), connections[0]);
+            if (terminalShader) {
+                return terminalShader;
+            }
+        }
+    }
+
+    const std::string terminalSuffix = ":" + terminalName;
+    for (const UsdAttribute& attr : materialPrim.GetAttributes()) {
+        const std::string name = attr.GetName().GetString();
+        if (!TfStringStartsWith(name, "outputs:") ||
+            !TfStringEndsWith(name, terminalSuffix) ||
+            name == "outputs:" + terminalName) {
+            continue;
+        }
+
+        SdfPathVector connections;
+        if (!attr.GetConnections(&connections) || connections.empty()) {
+            continue;
+        }
+
+        UsdPrim terminalShader =
+            _ResolveConnectedPrim(materialPrim.GetStage(), connections[0]);
+        if (!terminalShader) {
+            continue;
+        }
+
+        TfToken shaderId;
+        if (terminalShader.GetAttribute(TfToken("info:id")).Get(&shaderId) &&
+            TfStringStartsWith(shaderId.GetString(), "ND_")) {
+            return terminalShader;
+        }
+    }
+
+    return UsdPrim();
+}
+
+UsdPrim
+_FindInlineMaterialXSurfaceShaderPrim(const UsdPrim& materialPrim)
+{
+    return _FindInlineMaterialXTerminalShaderPrim(materialPrim, "surface");
+}
+
+UsdPrim
+_FindInlineMaterialXDisplacementShaderPrim(const UsdPrim& materialPrim)
+{
+    return _FindInlineMaterialXTerminalShaderPrim(materialPrim, "displacement");
+}

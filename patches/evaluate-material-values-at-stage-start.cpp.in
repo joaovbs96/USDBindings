@@ -1,0 +1,9 @@
+            // Evaluate authored material values at the same stage start time used
+            // for the initial scene. Default-only attributes still resolve at
+            // any numeric time, while sampled values select the opening frame.
+            VtValue value;
+            const UsdStageWeakPtr valueStage = sourcePrim.GetStage();
+            const UsdTimeCode valueTime = valueStage
+                ? UsdTimeCode(valueStage->GetStartTimeCode())
+                : UsdTimeCode::Default();
+            if (valueAttr.Get(&value, valueTime) && !value.IsEmpty()) {

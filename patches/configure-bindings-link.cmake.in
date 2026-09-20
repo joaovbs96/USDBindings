@@ -1,0 +1,19 @@
+set(USD_WEBVIEW_LINK_OPTIMIZATION "-O2" CACHE STRING
+    "Emscripten optimization used only for the final bindings link")
+
+# A reused SDK prefix can retain shared OpenSubdiv targets beside the static
+# archive. A wasm main module must link the static archive or Emscripten turns
+# on dynamic linking and generates a runtime dependency on libosdCPU.so.
+if(EMSCRIPTEN AND TARGET OpenSubdiv::osdCPU)
+    set(_usd_webview_osd_cpu_static "${pxr_DIR}/lib/libosdCPU.a")
+    if(NOT EXISTS "${_usd_webview_osd_cpu_static}")
+        message(FATAL_ERROR
+            "Static OpenSubdiv archive is required: ${_usd_webview_osd_cpu_static}")
+    endif()
+    set_target_properties(OpenSubdiv::osdCPU PROPERTIES
+        IMPORTED_LOCATION "${_usd_webview_osd_cpu_static}"
+        IMPORTED_LOCATION_RELEASE "${_usd_webview_osd_cpu_static}"
+        IMPORTED_NO_SONAME TRUE
+        IMPORTED_SONAME_RELEASE ""
+    )
+endif()

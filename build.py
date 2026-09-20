@@ -60,6 +60,7 @@ class Ctx:
         self.markers = self.root / ".phases"
         self.jobs = args.jobs or os.cpu_count() or 4
         self.force = set(PHASES) if args.force_all else set(args.force or [])
+        self.bindings_link_o0 = args.bindings_link_o0
 
 
 def say(msg, kind="info"):
@@ -339,30 +340,294 @@ def _add_geomprop_streams(source_root):
     say("patched unifiedDriver.cpp to emit geomprop primvar streams", "ok")
 
 
+def _resolve_material_interface_values(source_root):
+    """Preserve authored values forwarded through MaterialX interface inputs.
+
+    The inline MaterialX builder previously followed connections only to shader
+    prims. A shader input connected to a Material or NodeGraph interface input
+    therefore disappeared from the generated XML, even when that interface
+    input had an authored value. Use OpenUSD's shading-network resolver so
+    nested interface forwarding, cycles, and invalid sources follow the same
+    rules as the rest of USD.
+    """
+    path = source_root / "native" / "usd-webview-bindings" / "src" / "materials.cpp"
+    if not path.exists():
+        raise SystemExit("expected %s: is the webview submodule checked out?" % path)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    marker = "Resolve through Material and NodeGraph interface inputs"
+    if marker in text:
+        say("materials.cpp already resolves MaterialX interface values, nothing to patch", "ok")
+        return
+
+    start_anchor = "    SdfPathVector connections;\n"
+    end_anchor = "\n    if (!hasPayload) {\n"
+    function_start = text.find("void\n_AppendMtlxInputXml(")
+    if function_start < 0:
+        raise SystemExit("materials.cpp has no _AppendMtlxInputXml function")
+    start = text.find(start_anchor, function_start)
+    end = text.find(end_anchor, start)
+    if start < 0 or end < 0 or text.find(start_anchor, start + 1, end) >= 0:
+        raise SystemExit(
+            "materials.cpp MaterialX input anchors are not shaped as expected: "
+            "the webview pin has moved. Refusing to patch blindly.")
+    replacement = (PATCHES / "emit-material-interface-values.cpp.in").read_text(
+        encoding="utf-8")
+    path.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
+    say("patched materials.cpp to preserve MaterialX interface input values", "ok")
+
+
+def _evaluate_material_values_at_stage_start(source_root):
+    """Evaluate inline MaterialX literal inputs at the stage start time."""
+    path = source_root / "native" / "usd-webview-bindings" / "src" / "materials.cpp"
+    if not path.exists():
+        raise SystemExit("expected %s: is the webview submodule checked out?" % path)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    marker = "Evaluate authored material values at the same stage start time"
+    if marker in text:
+        say("materials.cpp already evaluates material values at stage start", "ok")
+        return
+    old = ("            VtValue value;\n"
+           "            if (valueAttr.Get(&value) && !value.IsEmpty()) {\n")
+    function_start = text.find("void\n_AppendMtlxInputXml(")
+    function_end = text.find("\n    if (!hasPayload) {", function_start)
+    start = text.find(old, function_start, function_end)
+    if function_start < 0 or function_end < 0 or start < 0:
+        raise SystemExit(
+            "materials.cpp value-time anchors moved. Refusing to patch blindly.")
+    replacement = (PATCHES / "evaluate-material-values-at-stage-start.cpp.in").read_text(
+        encoding="utf-8")
+    path.write_text(
+        text[:start] + replacement + text[start + len(old):], encoding="utf-8")
+    say("patched materials.cpp to evaluate material values at stage start", "ok")
+
+def _preserve_material_texcoords(source_root):
+    """Keep authored MaterialX texcoord values and connections in inline XML."""
+    path = source_root / "native" / "usd-webview-bindings" / "src" / "materials.cpp"
+    if not path.exists():
+        raise SystemExit("expected %s: is the webview submodule checked out?" % path)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    marker = "Preserve explicit texcoord values and connections"
+    if marker in text:
+        say("materials.cpp already preserves explicit texcoord inputs", "ok")
+        return
+    old = ("    if (inputName == \"texcoord\") {\n"
+           "        return;\n"
+           "    }\n")
+    function_start = text.find("void\n_AppendMtlxInputXml(")
+    function_end = text.find("\n    const std::string inputType", function_start)
+    start = text.find(old, function_start, function_end)
+    if function_start < 0 or function_end < 0 or start < 0:
+        raise SystemExit(
+            "materials.cpp texcoord anchors moved. Refusing to patch blindly.")
+    replacement = (PATCHES / "preserve-material-texcoord.cpp.in").read_text(
+        encoding="utf-8")
+    path.write_text(
+        text[:start] + replacement + text[start + len(old):], encoding="utf-8")
+    say("patched materials.cpp to preserve explicit MaterialX texcoords", "ok")
+
+
+def _emit_material_displacement_terminal(source_root):
+    """Preserve an authored MaterialX displacement terminal in inline XML."""
+    path = source_root / "native" / "usd-webview-bindings" / "src" / "materials.cpp"
+    if not path.exists():
+        raise SystemExit("expected %s: is the webview submodule checked out?" % path)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    marker = "Preserve the authored MaterialX terminal instead of guessing"
+    if marker in text:
+        say("materials.cpp already emits MaterialX displacement terminals", "ok")
+        return
+
+    helper_start = text.find("UsdPrim\n_FindInlineMaterialXSurfaceShaderPrim(")
+    helper_end = text.find("\nstd::string\n_InlineMaterialXPath(", helper_start)
+    if helper_start < 0 or helper_end < 0:
+        raise SystemExit(
+            "materials.cpp terminal-discovery anchors moved. Refusing to patch blindly.")
+    helper = (PATCHES / "emit-material-displacement-terminal.cpp.in").read_text(
+        encoding="utf-8")
+    text = text[:helper_start] + helper + text[helper_end:]
+
+    old_type = '            outputType = category == "standard_surface" ? "surfaceshader" : "float";\n'
+    new_type = (
+        '            outputType = category == "standard_surface" ? "surfaceshader"\n'
+        '                : category == "displacement" ? "displacementshader"\n'
+        '                : "float";\n')
+    if text.count(old_type) != 1:
+        raise SystemExit(
+            "materials.cpp shader-output type anchor moved. Refusing to patch blindly.")
+    text = text.replace(old_type, new_type, 1)
+
+    old_terminal = (
+        "    UsdPrim surfaceShader = _FindInlineMaterialXSurfaceShaderPrim(materialPrim);\n"
+        "    if (!surfaceShader) {\n"
+        "        return emscripten::val::undefined();\n"
+        "    }\n")
+    new_terminal = old_terminal + (
+        "    const UsdPrim displacementShader =\n"
+        "        _FindInlineMaterialXDisplacementShaderPrim(materialPrim);\n")
+    if text.count(old_terminal) != 1:
+        raise SystemExit(
+            "materials.cpp inline-material terminal anchor moved. Refusing to patch blindly.")
+    text = text.replace(old_terminal, new_terminal, 1)
+
+    old_material = (
+        '    xml << "    <input name=\\"surfaceshader\\" type=\\"surfaceshader\\" nodename=\\""\n'
+        '        << _XmlEscape(surfaceShader.GetName().GetString()) << "\\" />\\n";\n'
+        '    xml << "  </surfacematerial>\\n";\n')
+    new_material = (
+        '    xml << "    <input name=\\"surfaceshader\\" type=\\"surfaceshader\\" nodename=\\""\n'
+        '        << _XmlEscape(surfaceShader.GetName().GetString()) << "\\" />\\n";\n'
+        '    if (displacementShader) {\n'
+        '        xml << "    <input name=\\"displacementshader\\" type=\\"displacementshader\\" nodename=\\""\n'
+        '            << _XmlEscape(displacementShader.GetName().GetString()) << "\\" />\\n";\n'
+        '    }\n'
+        '    xml << "  </surfacematerial>\\n";\n')
+    if text.count(old_material) != 1:
+        raise SystemExit(
+            "materials.cpp surfacematerial anchor moved. Refusing to patch blindly.")
+    text = text.replace(old_material, new_material, 1)
+    path.write_text(text, encoding="utf-8")
+    say("patched materials.cpp to emit authored MaterialX displacement terminals", "ok")
+
+def _emit_time_sampled_scene_transforms(source_root):
+    """Include evaluated Camera and LightAPI transforms in the generic stream."""
+    src = source_root / "native" / "usd-webview-bindings" / "src"
+    header_path = src / "webviewCommon.h"
+    source_path = src / "stageApi.cpp"
+    if not header_path.exists() or not source_path.exists():
+        raise SystemExit("expected native webview sources: is the submodule checked out?")
+
+    header = header_path.read_text(encoding="utf-8", errors="replace")
+    camera_include = '#include "pxr/usd/usdGeom/camera.h"\n'
+    if camera_include not in header:
+        include_anchor = '#include "pxr/usd/usdGeom/mesh.h"\n'
+        if header.count(include_anchor) != 1:
+            raise SystemExit(
+                "webviewCommon.h mesh include anchor moved. Refusing to patch blindly.")
+        header_path.write_text(
+            header.replace(include_anchor, camera_include + include_anchor, 1),
+            encoding="utf-8")
+
+    text = source_path.read_text(encoding="utf-8", errors="replace")
+    marker = "whose evaluated world transforms are consumed"
+    if marker in text:
+        say("stageApi.cpp already emits time-sampled scene transforms", "ok")
+        return
+    function_start = text.find("ExtractTransformsAtTime(")
+    function_end = text.find("\nemscripten::val\nGetSceneGraph(", function_start)
+    old = ("        if (!prim.IsA<UsdGeomMesh>()) {\n"
+           "            continue;\n"
+           "        }\n")
+    start = text.find(old, function_start, function_end)
+    if function_start < 0 or function_end < 0 or start < 0:
+        raise SystemExit(
+            "stageApi.cpp transform anchors moved. Refusing to patch blindly.")
+    replacement = (PATCHES / "emit-scene-transforms.cpp.in").read_text(
+        encoding="utf-8")
+    source_path.write_text(
+        text[:start] + replacement + text[start + len(old):], encoding="utf-8")
+    say("patched stageApi.cpp to emit time-sampled camera and light transforms", "ok")
+
+def _configure_bindings_link(source_root):
+    """Keep the wasm bindings link static and expose its final optimization."""
+    path = source_root / "native" / "usd-webview-bindings" / "CMakeLists.txt"
+    if not path.exists():
+        raise SystemExit("expected %s: is the webview submodule checked out?" % path)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    marker = "USD_WEBVIEW_LINK_OPTIMIZATION"
+    if marker in text:
+        say("bindings CMake link policy already patched", "ok")
+        return
+    tbb_block = ("if(TARGET TBB::tbb)\n"
+                 "    get_target_property(_usd_webview_tbb_location TBB::tbb IMPORTED_LOCATION)\n"
+                 "    if(NOT _usd_webview_tbb_location)\n"
+                 "        set_target_properties(TBB::tbb PROPERTIES\n"
+                 "            IMPORTED_LOCATION \"${pxr_DIR}/lib/libtbb.a\"\n"
+                 "            INTERFACE_INCLUDE_DIRECTORIES \"${pxr_DIR}/include\"\n"
+                 "        )\n"
+                 "    endif()\n"
+                 "endif()\n")
+    optimization = "    -O2\n"
+    if text.count(tbb_block) != 1 or text.count(optimization) != 1:
+        raise SystemExit(
+            "bindings CMake link anchors moved. Refusing to patch blindly.")
+    policy = (PATCHES / "configure-bindings-link.cmake.in").read_text(
+        encoding="utf-8")
+    text = text.replace(tbb_block, tbb_block + "\n" + policy, 1)
+    text = text.replace(
+        optimization, "    ${USD_WEBVIEW_LINK_OPTIMIZATION}\n", 1)
+    path.write_text(text, encoding="utf-8")
+    say("patched bindings CMake for static OpenSubdiv and configurable link optimization", "ok")
+
+
+def _prepare_windows_bindings_link_response(build_dir):
+    """Move long Emscripten LINK_FLAGS into a response file on Windows."""
+    if not IS_WINDOWS:
+        return
+    ninja_path = build_dir / "build.ninja"
+    if not ninja_path.exists():
+        raise SystemExit("bindings configure did not create %s" % ninja_path)
+    text = ninja_path.read_text(encoding="utf-8", errors="replace")
+    target = "build usdWebViewBindingsModule.js: CXX_EXECUTABLE_LINKER_"
+    target_start = text.find(target)
+    target_end = text.find("\n\n", target_start)
+    if target_start < 0 or target_end < 0:
+        raise SystemExit("bindings Ninja target not found; refusing to patch blindly")
+    prefix = "  LINK_FLAGS = "
+    line_start = text.find(prefix, target_start, target_end)
+    line_end = text.find("\n", line_start, target_end)
+    if line_start < 0 or line_end < 0:
+        raise SystemExit("bindings Ninja LINK_FLAGS not found; refusing to patch blindly")
+    flags = text[line_start + len(prefix):line_end]
+    response_name = "usdWebViewBindingsModule-link-options.rsp"
+    if flags == "@" + response_name:
+        say("Windows bindings link response file already prepared", "ok")
+        return
+    if not flags.strip() or "$" in flags:
+        raise SystemExit(
+            "bindings Ninja LINK_FLAGS are empty or escaped; refusing to write an unsafe response file")
+    (build_dir / response_name).write_text(flags + "\n", encoding="utf-8")
+    text = text[:line_start] + prefix + "@" + response_name + text[line_end:]
+    ninja_path.write_text(text, encoding="utf-8")
+    say("moved Windows bindings link options into %s" % response_name, "ok")
+
 def build_bindings(ctx):
     if done(ctx, "bindings"):
         say("bindings: already done, skipping", "ok")
         return
     _add_geomprop_streams(SUBMODULES["webview"])
+    _resolve_material_interface_values(SUBMODULES["webview"])
+    _evaluate_material_values_at_stage_start(SUBMODULES["webview"])
+    _preserve_material_texcoords(SUBMODULES["webview"])
+    _emit_material_displacement_terminal(SUBMODULES["webview"])
+    _emit_time_sampled_scene_transforms(SUBMODULES["webview"])
+    _configure_bindings_link(SUBMODULES["webview"])
     src = SUBMODULES["webview"] / "native" / "usd-webview-bindings"
     bld = ctx.build / "bindings"
     # USD_WEBVIEW_OPENUSD_SOURCE_DIR must be overridden: upstream defaults it to a
     # path on the maintainer's machine. It needs the OpenUSD *source* tree, for
     # private headers the wasm SDK does not install (e.g. sdf/usdzResolver.h).
-    run([emcmake_cmd(), "cmake", "-S", str(src), "-B", str(bld),
-         "-DCMAKE_BUILD_TYPE=Release",
-         "-Dpxr_DIR=" + str(ctx.install),
-         "-DTBB_DIR=" + str(ctx.install / "lib" / "cmake" / "TBB"),
-         # The Emscripten toolchain restricts find_package to its own sysroot,
-         # so pxrConfig.cmake's find_dependency calls need the install prefix
-         # named explicitly. build_usd.py does the same for its own configure.
-         "-DCMAKE_FIND_ROOT_PATH=" + str(ctx.install),
-         "-DCMAKE_PREFIX_PATH=" + str(ctx.install),
-         "-DOpenSubdiv_DIR=" + str(ctx.install / "lib" / "cmake" / "OpenSubdiv"),
-         "-DMaterialX_DIR=" + str(ctx.install / "lib" / "cmake" / "MaterialX"),
-         "-DUSD_WEBVIEW_OPENUSD_SOURCE_DIR=" + str(SUBMODULES["openusd"]),
-         "-DCMAKE_INSTALL_PREFIX=" + str(ctx.out)],
-        ctx.logs / "bindings.log")
+    configure = [emcmake_cmd(), "cmake"]
+    if IS_WINDOWS:
+        configure.extend(["-G", "Ninja"])
+    configure.extend([
+        "-S", src.as_posix(), "-B", bld.as_posix(),
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-Dpxr_DIR=" + ctx.install.as_posix(),
+        "-DTBB_DIR=" + (ctx.install / "lib" / "cmake" / "TBB").as_posix(),
+        # CMake stringifies these cache values into generated files. Forward
+        # slashes avoid Windows paths such as C:\Users becoming escape sequences.
+        "-DCMAKE_FIND_ROOT_PATH=" + ctx.install.as_posix(),
+        "-DCMAKE_PREFIX_PATH=" + ctx.install.as_posix(),
+        "-DOpenSubdiv_DIR=" + (ctx.install / "lib" / "cmake" / "OpenSubdiv").as_posix(),
+        "-DMaterialX_DIR=" + (ctx.install / "lib" / "cmake" / "MaterialX").as_posix(),
+        "-DUSD_WEBVIEW_OPENUSD_SOURCE_DIR=" + SUBMODULES["openusd"].as_posix(),
+        "-DCMAKE_INSTALL_PREFIX=" + ctx.out.as_posix(),
+    ])
+    configure.append(
+        "-DUSD_WEBVIEW_LINK_OPTIMIZATION="
+        + ("-O0" if ctx.bindings_link_o0 else "-O2"))
+    run(configure, ctx.logs / "bindings.log")
+    _prepare_windows_bindings_link_response(bld)
     t0 = time.time()
     run(["cmake", "--build", str(bld), "--target", "install", "-j", str(ctx.jobs)],
         ctx.logs / "bindings.log")
@@ -411,6 +676,8 @@ def main():
                     help="build USD without MaterialX (breaks .mtlx layer references)")
     ap.add_argument("--sdk-fingerprint", action="store_true",
                     help="print a hash of the SDK build inputs and exit (for CI cache keys)")
+    ap.add_argument("--bindings-link-o0", action="store_true",
+                    help="link bindings at O0 to bypass a local wasm-opt crash")
     args = ap.parse_args()
 
     # Before check_prereqs: CI computes the cache key long before emsdk exists.

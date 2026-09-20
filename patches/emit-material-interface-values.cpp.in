@@ -1,0 +1,62 @@
+    // Resolve through Material and NodeGraph interface inputs with USD's own
+    // shading-network rules. The old direct-prim walk discarded a connection
+    // when its source was an authored interface value rather than a shader.
+    const UsdShadeAttributeVector valueAttrs =
+        UsdShadeInput(attr).GetValueProducingAttributes();
+    if (!valueAttrs.empty()) {
+        const UsdAttribute& valueAttr = valueAttrs.front();
+        const UsdPrim sourcePrim = valueAttr.GetPrim();
+        const UsdShadeAttributeType sourceType =
+            UsdShadeUtils::GetType(valueAttr.GetName());
+        if (sourceType == UsdShadeAttributeType::Output &&
+            sourcePrim.IsA<UsdShadeShader>()) {
+            if (referenceGraphOutputs &&
+                graphRoot && !graphName.empty() &&
+                sourcePrim.GetParent() == graphRoot) {
+                inputXml << " nodegraph=\"" << _XmlEscape(graphName)
+                    << "\" output=\"" << _XmlEscape(_MtlxGraphOutputName(sourcePrim)) << "\"";
+            } else {
+                inputXml << " nodename=\""
+                    << _XmlEscape(sourcePrim.GetName().GetString()) << "\"";
+            }
+            hasPayload = true;
+            const std::string outputName = valueAttr.GetName().GetString();
+            if (!outputName.empty() &&
+                outputName != "outputs:out" &&
+                outputName != "out" &&
+                outputName != "outputs:result" &&
+                !(referenceGraphOutputs &&
+                  graphRoot && !graphName.empty() &&
+                  sourcePrim.GetParent() == graphRoot)) {
+                std::string cleanOutput = outputName;
+                if (TfStringStartsWith(cleanOutput, "outputs:")) {
+                    cleanOutput = cleanOutput.substr(std::string("outputs:").size());
+                }
+                inputXml << " output=\"" << _XmlEscape(cleanOutput) << "\"";
+            }
+        } else {
+            // Evaluate authored material values at the same stage start time used
+            // for the initial scene. Default-only attributes still resolve at
+            // any numeric time, while sampled values select the opening frame.
+            VtValue value;
+            const UsdStageWeakPtr valueStage = sourcePrim.GetStage();
+            const UsdTimeCode valueTime = valueStage
+                ? UsdTimeCode(valueStage->GetStartTimeCode())
+                : UsdTimeCode::Default();
+            if (valueAttr.Get(&value, valueTime) && !value.IsEmpty()) {
+                const SdfLayerHandle valueAnchor = sourcePrim == shaderPrim
+                    ? anchorLayer
+                    : _AnchorLayerForPrim(sourcePrim);
+                const std::string formatted = _FormatMtlxValue(
+                    value, valueAnchor ? valueAnchor : anchorLayer);
+                if (!formatted.empty()) {
+                    inputXml << " value=\"" << _XmlEscape(formatted) << "\"";
+                    hasPayload = true;
+                    if (inputType == "filename") {
+                        inputXml << " colorspace=\"srgb_texture\"";
+                    }
+                }
+            }
+        }
+    }
+

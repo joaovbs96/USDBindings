@@ -1,0 +1,11 @@
+        // Preserve the historical mesh records and add the other scene
+        // primitives whose evaluated world transforms are consumed by the
+        // viewer. This keeps the generic API record shape unchanged while
+        // allowing time-sampled camera and light xforms to reach JavaScript.
+        const bool hasSceneTransform =
+            prim.IsA<UsdGeomMesh>() ||
+            prim.IsA<UsdGeomCamera>() ||
+            static_cast<bool>(UsdLuxLightAPI(prim));
+        if (!hasSceneTransform) {
+            continue;
+        }

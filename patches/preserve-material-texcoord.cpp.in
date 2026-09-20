@@ -1,0 +1,3 @@
+    // Preserve explicit texcoord values and connections. When no authored
+    // payload exists, the shared hasPayload guard below still omits the input
+    // so the MaterialX node definition can supply its implicit UV default.
