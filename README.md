@@ -1,256 +1,317 @@
 # USDBindings
 
 Reproducible WebAssembly build of the OpenUSD + MaterialX SDK and the
-[usd-wg-webview](https://github.com/usd-wg/usd-wg-webview) native bindings.
+[usd-wg-webview](https://github.com/usd-wg/usd-wg-webview) native bindings,
+with a small set of local patches applied on top.
 
-Upstream commits its built `.wasm` by hand and no CI rebuilds it, so the binary
-cannot be reproduced from source and the OpenUSD revision it was built against is
-not recorded anywhere reliable. This repository pins all three inputs as
-submodules and builds them in CI, so every artifact is traceable to exact
-revisions.
+Upstream commits its built `.wasm` by hand and no CI rebuilds it, so the
+binary cannot be reproduced from source and the OpenUSD revision it was built
+against is not recorded anywhere reliable. This repository pins all three
+inputs as submodules, applies the patches below, and builds in CI, so every
+artifact is traceable to exact revisions and to the exact source changes it
+carries.
 
-## Pinned sources
+## Overview
 
-| submodule | path | pin |
+The build produces three files: `usdWebViewBindingsModule.js` (the Emscripten
+glue), `usdWebViewBindingsModule.wasm` (the compiled module), and the
+unmodified `usdWebViewBindings.js` wrapper from usd-wg-webview that loads
+them. All three are consumed by the MaterialXNodeDocs USD Scene viewer, which
+vendors them under `vendor/usd-webview-bindings/` and drives the module from
+`js/usd/usd-stage-worker.js`. That worker calls `InitializeRuntime`,
+`OpenStage`, `ExtractMaterialPayloads` and `ExtractTransformsAtTime` (and a
+scene-graph query) against the loaded module; `js/usd-scene-renderer.js`
+consumes the resulting payloads and, separately, still re-derives camera
+transforms in JavaScript rather than through the new scene-transform patch,
+so that patch's benefit is not yet wired into the renderer.
+
+The artifact reaches that consumer through two paths, and they currently
+disagree. A **pinned upstream fetch** (`scripts/vendor.mjs`) downloads the
+three files straight from the `usd-wg-webview` repository at commit
+`b050c3731d1854a5980b6b4fe55ec1725dc18f51` and checks them against recorded
+sha256 hashes; this path still points at unpatched upstream sources. A
+**local install** of a verified artifact built from this repository
+(`scratchpad/install-approved-usd-bindings.ps1` in the consumer repo) carries
+the patches described below. The Publishing and Verification record sections
+cover what closing that gap requires.
+
+## Upstream sources
+
+| submodule | path | recorded commit |
 |---|---|---|
-| OpenUSD | `external/openusd` | `v26.08` |
-| MaterialX | `external/materialx` | `v1.39.5` |
-| usd-wg-webview | `external/usd-wg-webview` | `b050c373` |
+| OpenUSD | `external/openusd` | `ee47c679abde5b467a7b6a41f3b2285564a4222e` (`v26.08`) |
+| MaterialX | `external/materialx` | `7b64921ef1d42f2d57871e9d2c43dc11f041f26b` (`git describe`: `v1.39.5-rc1-25-g7b64921e`, i.e. 25 commits past the `v1.39.5-rc1` tag, not the `v1.39.5` tag itself) |
+| usd-wg-webview | `external/usd-wg-webview` | `b050c3731d1854a5980b6b4fe55ec1725dc18f51` (`main`) |
 
-OpenUSD `v26.08` pins MaterialX `v1.39.5` itself, so those two agree by
-construction. The webview sources are used **unmodified**.
+From OpenUSD, the build turns on Imaging and MaterialX support and turns GL
+off: `--imaging` (which pulls in OpenSubdiv, unlike the rejected
+`--usd-imaging` flag), `-DPXR_BUILD_USD_IMAGING=ON`,
+`-DPXR_ENABLE_MATERIALX_SUPPORT=ON`, `-DPXR_ENABLE_GL_SUPPORT=OFF`, and
+`-DBUILD_SHARED_LIBS=OFF` for OpenSubdiv specifically; the Building on Windows
+section explains why the last one is load-bearing. MaterialX itself is built
+as a separate, static, shadergen-only phase (`MATERIALX_BUILD_RENDER=OFF`,
+`MATERIALX_BUILD_VIEWER=OFF`, no Python/JS bindings) because `build_usd.py`
+force-disables MaterialX on wasm targets and its own installer only knows how
+to build shared libraries.
 
-## Build
+From usd-wg-webview, the build compiles the native `usd-webview-bindings`
+C++ sources (JavaScript/Emscripten glue and the inline MaterialX exporter)
+against the SDK above. Several of these sources are now patched locally, so
+unlike the OpenUSD-side changes they are no longer used unmodified; the Local
+patches section covers each one.
 
-```sh
-git clone --recursive https://github.com/joaovbs96/USDBindings.git
-cd USDBindings
-source /path/to/emsdk/emsdk_env.sh     # emsdk_env.bat on Windows
-python3 build.py --root ~/usdwasm
-```
+## Local patches
 
-Output: `~/usdwasm/out/usdWebViewBindingsModule.{js,wasm}`.
+All patches live in `patches/` as `.cpp.in`/`.cmake.in` templates. `build.py`
+applies each one to the checked-out submodule at build time (never committed
+into the submodule), and every application site asserts its anchor text
+matches exactly once before writing, so a moved upstream pin fails the build
+instead of silently patching the wrong thing. They are listed in the order
+the underlying defects were fixed.
 
-Phases are resumable. `--force usd` redoes one, `--clean` resets, and
-`--skip-materialx` builds without MaterialX for a faster first pass.
+**Material interface values and NodeGraph forwarding**
+(`emit-material-interface-values.cpp.in`, target
+`native/usd-webview-bindings/src/materials.cpp`, function
+`_AppendMtlxInputXml`). The original connection walk stopped at the first
+`UsdShadeShader` prim, so a shader input connected to an authored `Material`
+or `NodeGraph` interface input found no shader and the generated MaterialX
+input simply disappeared. In the viewer this showed up as interface defaults
+(for example a material's base color set at the Material/NodeGraph level
+rather than on the shader) rendering as the MaterialX node's black or zero
+default. The fix walks `UsdShadeInput::GetValueProducingAttributes()`,
+OpenUSD's own shading-network resolver, which also handles nested
+NodeGraphs, cycles, and invalid sources. Covered by
+`tests/material-interface-inline.mjs` (color, float, and vector cases).
 
-Windows works too, with two caveats. `build_usd.py` auto-selects the Ninja
-generator there, so Ninja must be on PATH. It also invokes `emcmake.bat` and
-`emmake.bat` by those literal names, while current emsdk ships only `.exe`
-launchers (`emcmake.exe`, `emmake.exe`) and `cmd.exe` will not substitute one for
-the other. Put `.bat` shims that forward to the `.exe` on PATH ahead of emsdk,
-for example:
+**Texcoord connection preservation** (`preserve-material-texcoord.cpp.in`,
+same file/function). The serializer discarded every input literally named
+`texcoord`, including authored values and connections, so any material that
+connected or overrode `texcoord` lost that input entirely, falling back to a
+node definition's implicit UV default even when the author had wired
+something else. The fix lets `texcoord` use the normal value-producing path;
+inputs with no authored payload are still omitted so the implicit default
+still applies when nothing was authored. Covered by
+`tests/material-texcoord-inline.mjs` (connected, literal, and implicit
+cases, checked for no duplicate inputs).
+
+**Evaluating transforms and material values at stage start time**
+(`evaluate-material-values-at-stage-start.cpp.in`, same file/function, plus
+the general default-time behavior it replaces). Values were read with
+`Get(&value)` at the USD default time, which does not see time-sampled
+attributes. The fix reads at `stage->GetStartTimeCode()` instead, so a
+default-only attribute still resolves at any numeric time and a
+time-sampled one picks up the value authored at the stage's own opening
+frame instead of nothing. This is exercised together with the interface-value
+fix's resolver, and specifically by `tests/material-time-samples-inline.mjs`.
+
+**Scene transform emission** (`emit-scene-transforms.cpp.in`, target
+`native/usd-webview-bindings/src/stageApi.cpp`, function
+`ExtractTransformsAtTime`, plus a header include added to
+`webviewCommon.h`). The function only emitted `UsdGeomMesh` transforms, so
+the JavaScript side had no time-sampled camera or light matrices to read,
+since default-time attribute reads cannot see time samples either. The
+additive patch keeps every existing mesh record and adds `UsdGeomCamera` and
+`UsdLuxLightAPI` prims in the same `{path, matrix}` shape. Covered by
+`tests/time-sampled-scene-transforms.mjs` (two time samples across a Mesh, a
+Camera, and a DomeLight, with an unrelated Xform confirmed excluded).
+
+**The contextual displacement terminal**
+(`emit-material-displacement-terminal.cpp.in`, same file, around
+`_FindInlineMaterialXSurfaceShaderPrim`/`_FindInlineMaterialXTerminalShaderPrim`,
+plus edits to the shader-output type mapping and the `<surfacematerial>`
+emission). Previously only a hard-coded `surfaceshader` terminal was
+emitted, and the terminal-shader lookup picked a shader by traversal order
+rather than by following the authored `outputs:mtlx:*` connection. The fix
+generalizes the lookup into `_FindInlineMaterialXTerminalShaderPrim`, used
+for both `surface` and `displacement`, follows the authored output
+connection first (falling back to a `ND_`-prefixed shader on a
+matching-suffix output), types the new terminal's `outputType` as
+`displacementshader` for the `displacement` category (previously mistyped
+as `float`), and emits a `<input name="displacementshader" ...>` on the
+`<surfacematerial>` only when a displacement shader was actually found; an
+unconnected or absent displacement output is not guessed at, and a
+deliberately unrelated ("orphan") displacement prim in a scene is not
+picked up by traversal order. Covered by
+`tests/material-displacement-terminal-inline.mjs`, which asserts the
+connected displacement shader is used and explicitly asserts the orphan is
+not.
+
+**Static OpenSubdiv link configuration**
+(`configure-bindings-link.cmake.in`, target
+`native/usd-webview-bindings/CMakeLists.txt`). This one is not a
+source-behavior fix but a link-configuration one: it redirects
+`OpenSubdiv::osdCPU` to the installed static archive even if a reused SDK
+prefix still has stale shared OpenSubdiv files beside it, and separately
+exposes `USD_WEBVIEW_LINK_OPTIMIZATION` as a cache variable so the bindings
+link step's optimization level can be overridden, as used in Building on
+Windows. This patch has no dedicated fixture; it is verified indirectly by
+the static-link checks described there and by every other fixture actually
+loading the module.
+
+Two more changes are applied outside the webview patches proper. A single
+OpenUSD source change (`pxr/imaging/hgi/hgi.cpp`) adds an
+`ARCH_OS_WASM_VM` branch to `_MakeNewPlatformDefaultHgi()`'s platform
+dispatch, without which the file does not compile under Emscripten (`#error
+Unknown Platform`). And the geomprop-streaming patch to `unifiedDriver.cpp`
+(`expand-float-primvar.cpp.in` + `emit-geomprops.cpp.in`) lets
+`geompropvalue` MaterialX nodes read any scalar or vector primvar, not only
+`st` and `normals`. Neither has a dedicated fixture in `tests/`; the geomprop
+patch's own anchors are asserted to match exactly once, but there is no
+automated test exercising its behavior.
+
+## Building on Windows
+
+This machine already has: emsdk `6.0.8` (checked-out at
+`C:\Users\joaov\emsdk`, `.emsdk_version` reports `"6.0.8"`), CMake `3.31.4`,
+Python `3.11.9`, Ninja on PATH, and a working build root at
+`C:\Users\joaov\usdwasm` (with an `install/` prefix, `out/` output directory,
+and several previously verified `out-*-verified/` snapshots).
 
 ```bat
-@echo off
-"C:\path\to\emsdk\upstream\emscripten\emcmake.exe" %*
+emsdk_env.bat
+python build.py --root C:\Users\joaov\usdwasm
 ```
 
-## CI
+Windows needs `.bat` shims for `emcmake`/`emmake` ahead of emsdk on PATH,
+since `build_usd.py` invokes those literal names but current emsdk ships only
+`.exe` launchers. All CMake cache paths in the bindings phase are normalized
+to forward slashes, and the phase moves the Emscripten `LINK_FLAGS` value
+into a Ninja response file because of its length.
 
-`.github/workflows/build.yml`, manual dispatch only, since a cold build takes
-hours. It records the pinned revisions, measures runner disk before and after
-cleanup, watches disk during the build, and uploads the module plus the logs.
-On failure it puts the first compile errors directly into the job summary.
+The bindings link defaults to `-O2`. On this machine, the local emsdk 6.0.8
+`wasm-opt` process has crashed while linking an otherwise fully compiled
+tree; the observed failure mode is `local-build.log` recording a bindings
+configure error and `logs/bindings.log` recording the crash during the final
+link, not during compilation. The fallback re-links only the bindings phase
+at `-O0`:
 
-The SDK is cached between runs, so only the first run pays the full USD build.
-The key comes from `build.py --sdk-fingerprint`, which hashes the OpenUSD and
-MaterialX pins together with the text of the functions that build them. So
-editing the bindings phase cannot throw away a good SDK, and editing the SDK
-phase cannot silently reuse one built with different flags.
-
-A `sdk_cache_bust` checkbox forces a rebuild anyway, for the case where the
-cached SDK is suspect rather than stale. It is deliberately not part of the key:
-a checkbox only ever produces one value, so the second forced run would restore
-the cache the first one wrote. Instead it deletes the entry and skips the
-restore, so the rebuild is saved under the same key and becomes the new
-baseline. That is also why the job needs `actions: write`.
-
-Compilation is cached separately with ccache, via `EM_COMPILER_WRAPPER`, which
-emcc honours for every phase. ccache is content addressed, so a stale entry
-cannot be used by mistake: a changed source simply misses. That is why it is the
-one cache here restored with `restore-keys`, and why it is saved on every run
-regardless of outcome.
-
-Every cache here uses separate restore and save steps, because `actions/cache`
-does not save when a job fails, and a failed job is exactly the case worth
-caching: a good SDK followed by a broken bindings build, or an emsdk install
-that should not be repeated. emsdk is banked as soon as it is set up, the SDK
-once its phase marker exists, and ccache unconditionally.
-
-The three together share a 10GB per repository budget, which is why ccache is
-capped at 2G: the SDK prefix is the expensive one to lose, and it stays warm
-because every run reads it. Before saving, the job deletes `install/build` and `install/src`,
-which `build_usd.py` puts inside the install prefix and which are dead weight
-once the phase marker says the SDK is done.
-
-## Why MaterialX is built separately
-
-`build_usd.py` force-disables MaterialX on wasm targets:
-
-```python
-self.buildMaterialX = args.build_materialx and not self.targetWasm
+```bat
+python build.py --root C:\Users\joaov\usdwasm --force bindings --bindings-link-o0
 ```
 
-This is a gap in the convenience script, not an incompatibility. OpenUSD's own
-CMake has no emscripten guard on `PXR_ENABLE_MATERIALX_SUPPORT`; the script's
-MaterialX installer simply has no wasm branch and builds shared libraries, which
-cannot link into a static wasm module. So MaterialX is built statically first and
-the flag is re-enabled through `--build-args`, whose values land after the
-hardcoded `-DPXR_ENABLE_MATERIALX_SUPPORT=OFF` on the same cmake line.
+CI (`.github/workflows/build.yml`, manual dispatch only) keeps the default
+`-O2` optimized link; it has not been observed to hit the same crash on its
+`ubuntu-latest` runner (emcc `6.0.9` in the last recorded green run).
 
-MaterialX inside USD only serves the `usdMtlx` file format plugin, which lets USD
-compose `.mtlx` files as layers. Shader compilation happens elsewhere, so a
-consumer can render with a different MaterialX build.
+Logs land in `<root>/logs/{materialx,usd,bindings}.log`. Output lands in
+`<root>/out/usdWebViewBindingsModule.{js,wasm}`; a recent local build produced
+a 262,353-byte `.js` glue file and a `.wasm` in the 25.5-25.6 MB range
+(compare against upstream's own shipped 19,733,084-byte `.wasm`; the
+difference reflects the added patches, a different emcc, and MaterialX
+support upstream does not build in).
 
-## Imaging on wasm
+The module is expected to link statically: no `dylink` section, no
+`dynamicLibraries` entry, no GOT-relocation imports, and an import table
+limited to the `env` and `wasi_snapshot_preview1` modules. The static-link
+properties are checked by hand after a build, for example with
+`wasm-objdump -x`; no script in this repository enforces them yet.
 
-`build_usd.py` refuses the literal argument `--usd-imaging` on wasm targets:
+## Tests
 
-```python
-if "--usd-imaging" in sys.argv:
-    PrintError("Cannot build Usd Imaging for wasm build targets")
-    sys.exit(1)
+Five fixtures live in `tests/`, one `.mjs` runner paired with one `.usda`
+stage per patched behavior: `material-interface-inline`,
+`material-texcoord-inline`, `material-time-samples-inline`,
+`time-sampled-scene-transforms`, and `material-displacement-terminal-inline`.
+Each loads the built module directly with Node's WebAssembly API (no browser,
+no bundler), opens its paired `.usda` from an in-memory filesystem, and
+asserts on the generated inline MaterialX XML or on the raw transform arrays
+returned by `ExtractTransformsAtTime`. Run one against a build's output
+directory with:
+
+```sh
+node tests/material-interface-inline.mjs C:\Users\joaov\usdwasm\out
 ```
 
-`--imaging` is not on that rejection list, and unlike `--usd-imaging` it survives
-the `and not targetWasm` clause that computes `buildImaging`. That distinction
-matters for more than the flag: `buildImaging` being true is what adds
-**OpenSubdiv** to the dependency list, and no `-D` override can substitute for a
-library that never gets built. `PXR_BUILD_USD_IMAGING` is gated off separately,
-but it only emits a `-D` flag with no dependencies attached, so `--build-args`
-forces it back on.
+The directory argument defaults to `<repo>/out` if omitted. These fixtures
+are not wired into `.github/workflows/build.yml`, so running them is a manual
+step after a build. The displacement-terminal fixture is the one explicitly
+designed to fail against the pre-patch artifact: it asserts the emitted
+`displacementshader` input names the connected `ConnectedDisplacement` node
+and is not the scene's deliberately unrelated `OrphanDisplacement` prim,
+which the old traversal-order lookup could have picked instead.
 
-The bindings need both: they link `libusd_usdImaging.a`,
-`libusd_usdSkelImaging.a`, `usdVolImaging`, `usdProcImaging` and `usdHydra`, and
-include 12 `usdImaging` headers. Upstream's own `wasm-sdk.md` records
-`PXR_BUILD_IMAGING=ON` and `PXR_BUILD_USD_IMAGING=ON` in the SDK they ship, so
-this configuration is known to have worked at least once.
+## Installing into the viewer
 
-## The geomprop patch, and why this repo exists
+`scratchpad/install-approved-usd-bindings.ps1` in the MaterialXNodeDocs repo
+installs a verified artifact directory (default
+`C:\Users\joaov\usdwasm\out-production-verified`) over
+`vendor/usd-webview-bindings/` in that repo. Before copying, it checks that
+the source module passes `node --check` and a static ESM import probe, and
+that the existing vendor wrapper still imports the versioned generated
+module. It always takes a timestamped backup of the previously installed
+`.js`/`.wasm` (with a `manifest.json` recording before/after sha256 hashes)
+before overwriting, and re-verifies the copied files' hashes and static
+import afterward. Without `-Install` it only reports what would change.
 
-`build.py` also patches `unifiedDriver.cpp` before building the bindings, from
-`patches/`. This is the first change that makes our module behave differently
-from the one upstream ships, and it is the reason for building our own.
+The caveat is that `scripts/vendor.mjs` in that repo independently pins the
+three files' sha256 hashes against the unpatched upstream `usd-wg-webview`
+commit `b050c373...`. A local install from this repository intentionally
+diverges from those pinned hashes: as of this writing, the installed
+`.js`/`.wasm` in that repo hash to `f0ddfc74...` / `fd31759e...`, neither of
+which matches the pinned `c6965098...` / `0f2f5f97...`. Any `vendor` run,
+`vendor --check` run, or fresh checkout that re-fetches by the pinned hashes
+will silently revert to the unpatched artifact. A locally installed artifact
+must be treated as temporary: resync (or update) the pins in
+`scripts/vendor.mjs` before pushing that repo's `vendor/` state, and
+reinstall from this repository's verified output after any operation that
+re-runs `vendor`.
 
-The draw path expands only `st` and `normals` into the per-corner vertex stream,
-so a MaterialX `geompropvalue` node reading anything else gets no data and the
-viewer binds zeros. Procedural materials then render, but not as authored. The
-MaterialEggs sample library is the clear case: `egg_cadbury` carries `rest`
-(`float3`, vertex), `mask` and `specmask` (`float`, vertex) and `crosssection`
-(`float`, uniform) on every render mesh, and its materials read all four.
+## Publishing
 
-Their own `_ExpandPrimvarToCorners` already handles all four interpolation modes
-correctly, including `uniform` via `DecodeFaceIndexFromCoarseFaceParam`, so the
-resampling is not rewritten. But it indexes `v[c]`, so it cannot instantiate on
-scalar `float`, and most geomprop streams are float. So the patch adds a scalar
-sibling next to it and then a loop that emits `entry.geomprops`, each entry
-carrying `name`, `itemSize`, `interpolation` and a `Float32Array` view in the
-same corner order as `positions`. Only `st` and `normals` are skipped, since
-they ride their own channels, along with renderer-private `karma:` and `ri:`
-primvars. `displayColor` is deliberately **not** skipped: across the sample
-assets it is authored `constant` (empty), `uniform` and `vertex` depending on
-the mesh, so the uniform and vertex cases need the real stream rather than the
-single-value constant the driver already reports. A constant primvar with no
-values flattens to empty and drops out on its own.
+None of this has reached the deployed site yet. Getting there needs three
+things: commit the patches and any build-script changes in this repository
+(they currently apply cleanly to the pinned submodule commits but are not
+part of a tagged release here); produce a release artifact from a CI run of
+`.github/workflows/build.yml` (or an equivalently verified local build); and
+repin `scripts/vendor.mjs` in MaterialXNodeDocs to a URL that serves the
+patched artifact together with its new sha256 hashes, replacing the current
+pins against the unpatched `usd-wg-webview` commit. Until that repin happens,
+the pinned fetch path and any fresh `vendor` run will keep serving the
+unpatched behavior described in the Local patches section, regardless of what
+is installed locally.
 
-Scalar integer primvars are widened to float. MaterialX declares an integer
-geomprop as `in int` plus a non-`flat` `out int` varying, which is not valid
-GLSL ES 3.0 and would additionally need `vertexAttribIPointer`; every consumer
-seen so far feeds the value straight into `ND_convert_integer_float`, so the
-widening is lossless in practice and avoids both problems.
+## Verification record
 
-Both anchors are asserted to match exactly once, so a moved webview pin fails
-loudly rather than silently building without the feature. The right long-term
-home for this is a pull request upstream.
+A manual terminal audit was run over the 18 sample scenes in the MaterialEggs
+library after the displacement-terminal patch. The counts are per egg
+material, not per scene: the 18 scenes contain 25 egg materials, of which 14
+have a MaterialX displacement terminal connected (all of type
+ND_displacement_float) and 11 have none authored. The patched export picked up
+all 14, invented none for the 11, and found zero orphan displacement nodes
+(present in a scene but not wired to a material output). The audit was not
+captured as an automated fixture; only the single connected-plus-orphan case
+is covered by `tests/material-displacement-terminal-inline.mjs`.
 
-## OpenSubdiv must be static
+Artifact hashes currently installed in the MaterialXNodeDocs
+`vendor/usd-webview-bindings/`:
 
-`build.py` passes `--build-args OpenSubdiv,-DBUILD_SHARED_LIBS=OFF`, and that
-one flag decides whether the module works at all.
+| file | sha256 |
+|---|---|
+| `usdWebViewBindingsModule.js` | `f0ddfc7405969474f0adf2af6c28c4f55ab8116fcde3571e4f46e31040743ef6` |
+| `usdWebViewBindingsModule.wasm` | `fd31759e568c93751302482bb19d0d9d72eebc64f030717c980f1e5d098c19c0` |
 
-`build_usd.py` tries to make OpenSubdiv static for wasm with
-`-DBUILD_SHARED_LIB=OFF`, singular, which OpenSubdiv ignores, so the install
-ends up with `libosdCPU.so.3.6.1`. That file is a wasm dylib, and emcc treats
-any dylib on the link line as a reason to switch on dynamic linking:
+These do not match the hashes pinned in that repo's `scripts/vendor.mjs`
+(`c6965098...` for the `.js`, `0f2f5f97...` for the `.wasm`), which confirms
+the installed artifact is the locally built, patched one from this
+repository, not the pinned unpatched upstream fetch described in Installing
+into the viewer and Publishing.
 
-```python
-# link.py
-if options.dylibs and not settings.MAIN_MODULE:
-  default_setting('MAIN_MODULE', 2)
-```
+## Licence
 
-The result is a relocatable module: a `dylink` section, GOT relocations, glue
-more than three times the size carrying `loadDynamicLibrary` machinery, and a
-startup path that fetches `libosdCPU.so.3.6.1`. Nothing ships that file, so the
-fetch 404s and the module never initialises. In a browser this looks like stage
-loads simply failing.
+This repository's own files, namely `build.py`, the tests, the patch
+templates, and this documentation, are licensed under the Apache License
+2.0. Each submodule keeps its upstream licence: OpenUSD under its
+`LICENSE.txt` (Apache 2.0 with Pixar's modified trademark section),
+MaterialX under Apache 2.0, and usd-wg-webview under BSD 3-Clause. Patched
+upstream files remain under their upstream licence, and the templates in
+`patches/` that modify usd-wg-webview files retain its BSD copyright notice.
 
-Upstream's own module has no `dylink` section, so their older emcc did not make
-this choice. Forcing OpenSubdiv static removes the dylib and the link stays
-static regardless of emcc version.
+Because the produced artifact bundles code from all three components, any
+distribution of it must carry all three licence texts. The consumer repository
+currently vendors only the usd-wg-webview `LICENSE` next to the artifact,
+which needs the OpenUSD and MaterialX notices added when the patched artifact
+is published.
 
-## The one OpenUSD source patch
-
-`build.py` patches a single line of `pxr/imaging/hgi/hgi.cpp` before building.
-It is applied to the checked-out submodule at build time rather than committed,
-so the pin stays exactly `v26.08` and the change is visible in one place.
-
-`_MakeNewPlatformDefaultHgi()` chooses a backend from `ARCH_OS_LINUX`,
-`ARCH_OS_DARWIN` or `ARCH_OS_WINDOWS` and otherwise hits `#error Unknown
-Platform`. Emscripten gets neither: `arch/defines.h` defines `ARCH_OS_WASM_VM`
-in the first `#if`, so the `#elif` that would define `ARCH_OS_LINUX` never runs.
-This is the only `#error Unknown Platform` in the whole `pxr` tree, and OpenUSD
-`dev` has the identical unfixed code, so it is not a stale-pin problem.
-
-The patch adds an `ARCH_OS_WASM_VM` branch yielding `""`, which is what the
-existing `#else` already does: an empty type name finds no plugin, so the
-function returns `nullptr` through its own error path. Nothing in this
-configuration ever calls it, since every caller is `hdSt` or `hdx` test support
-that `PXR_ENABLE_GL_SUPPORT=OFF` excludes. It only has to compile.
-
-The patch refuses to apply if the dispatch is not shaped as expected, so moving
-the OpenUSD pin fails loudly instead of silently building something else.
-
-## Finding the SDK's own dependencies from the bindings
-
-The Emscripten toolchain points every `find_*` call at its own sysroot, so a
-package built into our install prefix is invisible unless the prefix is named
-explicitly. `build_usd.py` hits this too and works around it by setting
-`CMAKE_FIND_ROOT_PATH` for its configure, citing emscripten issue 13310.
-
-The installed `pxrConfig.cmake` re-runs `find_dependency` for OpenSubdiv, TBB
-and MaterialX, so the bindings configure needs the same treatment. OpenSubdiv is
-the one that bites: `Packages.cmake` tries `find_package(OpenSubdiv 3 CONFIG)`
-first and, when that succeeds, records `PXR_FIND_OPENSUBDIV_IN_CONFIG=ON` in
-`pxrConfig.cmake`, which makes config mode mandatory for every consumer
-afterwards. So the bindings configure passes `CMAKE_FIND_ROOT_PATH`,
-`CMAKE_PREFIX_PATH` and explicit `OpenSubdiv_DIR` and `MaterialX_DIR`.
-
-## Answers
-
-First green run: 2026-09-17, 64.9 min wall clock on a standard `ubuntu-latest`
-runner, emcc 6.0.9.
-
-1. **Does `PXR_BUILD_USD_IMAGING=ON` compile for wasm?** Yes, with the one line
-   `hgi.cpp` patch above. It was untested, not broken: nothing else in the
-   imaging stack needed changing once GL support was off.
-2. **Do the usd-wg-webview sources compile unmodified against `v26.08`?** Yes.
-   All 11 translation units built with no patches and no missing headers,
-   including the two fragile private includes. The only diagnostic is a
-   `-Winconsistent-missing-override` warning from USD's own `hd/meshTopology.h`.
-3. **Does a cold build fit a free runner?** Comfortably. 0.9 GB tree, 115 GB
-   disk left, 65 of the 350 minute budget.
-4. **Does the module behave like the one upstream ships?** Still open. Sizes are
-   within 1%: 19,931,285 bytes against upstream's 19,733,084. Different emcc and
-   a known-good OpenUSD revision explain a delta of that order, but behavioural
-   parity needs the module exercised against real stages.
-
-The link step resolving `libusd_usdImaging.a` also confirms the
-`PXR_BUILD_USD_IMAGING=ON` override reached cmake, despite `build_usd.py`
-printing `UsdImaging Off` in its pre-override summary.
-
-## Licences
-
-Each submodule keeps its own: OpenUSD and MaterialX are Apache-2.0,
-usd-wg-webview is BSD-3-Clause.
+A root `LICENSE` (Apache 2.0) and a `NOTICE` file listing the three
+components do not yet exist in this repository and should be added before
+publishing.
