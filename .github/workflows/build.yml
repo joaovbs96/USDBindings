@@ -340,11 +340,23 @@ jobs:
 
       - name: Download bindings artifact
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: usd-webview-bindings-wasm
           path: dist
 
+      - name: Check downloaded artifact
+        id: artifact
+        run: |
+          if [ -z "$(ls -A dist 2>/dev/null)" ]; then
+            echo "No files found in the downloaded bindings artifact, skipping release assembly and upload."
+            echo "has_files=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_files=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Assemble release assets
+        if: steps.artifact.outputs.has_files == 'true'
         run: |
           set -euo pipefail
           mkdir -p release
@@ -373,17 +385,26 @@ jobs:
           ( cd release && sha256sum usdWebViewBindings.js usdWebViewBindingsModule.js usdWebViewBindingsModule.wasm > SHA256SUMS )
           cat release/SHA256SUMS
 
-      - name: Create release
+      - name: Create or update release
+        if: steps.artifact.outputs.has_files == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           tag="${GITHUB_REF#refs/tags/}"
-          gh release create "$tag" \
-            release/usdWebViewBindings.js \
-            release/usdWebViewBindingsModule.js \
-            release/usdWebViewBindingsModule.wasm \
-            release/SHA256SUMS \
-            release/LICENSES.txt \
-            --repo "${{ github.repository }}" \
-            --title "$tag" \
-            --notes "USD + MaterialX WASM bindings built from this tag. Verify downloads against SHA256SUMS."
+          assets=(
+            release/usdWebViewBindings.js
+            release/usdWebViewBindingsModule.js
+            release/usdWebViewBindingsModule.wasm
+            release/SHA256SUMS
+            release/LICENSES.txt
+          )
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $tag already exists, uploading assets to it instead of creating a new one."
+            gh release upload "$tag" "${assets[@]}" --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$tag" "${assets[@]}" \
+              --repo "${{ github.repository }}" \
+              --title "$tag" \
+              --notes "USD + MaterialX WASM bindings built from this tag. Verify downloads against SHA256SUMS."
+          fi
