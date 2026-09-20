@@ -1,0 +1,57 @@
+#usda 1.0
+
+def Xform "World"
+{
+    def Scope "Looks"
+    {
+        def Material "DisplacedMaterial"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/DisplacedMaterial/Surface.outputs:out>
+            token outputs:mtlx:displacement.connect = </World/Looks/DisplacedMaterial/DisplacementGraph.outputs:result>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                color3f inputs:base_color = (0.2, 0.3, 0.4)
+                token outputs:out
+            }
+
+            def NodeGraph "DisplacementGraph"
+            {
+                token outputs:result.connect = </World/Looks/DisplacedMaterial/DisplacementGraph/ConnectedDisplacement.outputs:out>
+
+                def Shader "Height"
+                {
+                    uniform token info:id = "ND_constant_float"
+                    float inputs:value = 0.125
+                    float outputs:out
+                }
+
+                def Shader "ConnectedDisplacement"
+                {
+                    uniform token info:id = "ND_displacement_float"
+                    float inputs:displacement.connect = </World/Looks/DisplacedMaterial/DisplacementGraph/Height.outputs:out>
+                    float inputs:scale = 0.2
+                    token outputs:out
+                }
+            }
+
+            def Shader "OrphanDisplacement"
+            {
+                uniform token info:id = "ND_displacement_float"
+                float inputs:displacement = 0.9
+                token outputs:out
+            }
+        }
+    }
+
+    def Mesh "Triangle" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        rel material:binding = </World/Looks/DisplacedMaterial>
+    }
+}

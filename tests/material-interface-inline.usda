@@ -1,0 +1,83 @@
+#usda 1.0
+
+def Xform "World"
+{
+    def Scope "Looks"
+    {
+        def Material "InterfaceMaterial"
+        {
+            color3f inputs:baseColor = (0.097, 0.046634, 0.016199)
+            float inputs:roughness = 0.25
+            vector3f inputs:direction = (0.1, 0.2, 0.3)
+            token outputs:mtlx:surface.connect = </World/Looks/InterfaceMaterial/Surface.outputs:out>
+
+            def NodeGraph "Outer"
+            {
+                color3f inputs:baseColor.connect = </World/Looks/InterfaceMaterial.inputs:baseColor>
+                float inputs:roughness.connect = </World/Looks/InterfaceMaterial.inputs:roughness>
+                vector3f inputs:direction.connect = </World/Looks/InterfaceMaterial.inputs:direction>
+
+                def NodeGraph "Inner"
+                {
+                    color3f inputs:baseColor.connect = </World/Looks/InterfaceMaterial/Outer.inputs:baseColor>
+                    float inputs:roughness.connect = </World/Looks/InterfaceMaterial/Outer.inputs:roughness>
+                    vector3f inputs:direction.connect = </World/Looks/InterfaceMaterial/Outer.inputs:direction>
+                    float inputs:cycleA.connect = </World/Looks/InterfaceMaterial/Outer/Inner.inputs:cycleB>
+                    float inputs:cycleB.connect = </World/Looks/InterfaceMaterial/Outer/Inner.inputs:cycleA>
+
+                    def Shader "Mix"
+                    {
+                        uniform token info:id = "ND_mix_color3"
+                        color3f inputs:bg.connect = </World/Looks/InterfaceMaterial/Outer/Inner.inputs:baseColor>
+                        color3f inputs:fg = (0.5, 0.5, 0.5)
+                        float inputs:mix = 0
+                        color3f outputs:out
+                    }
+
+                    def Shader "InterfaceProbe"
+                    {
+                        uniform token info:id = "ND_interface_probe_vector3"
+                        float inputs:floatValue.connect = </World/Looks/InterfaceMaterial/Outer/Inner.inputs:roughness>
+                        vector3f inputs:vectorValue.connect = </World/Looks/InterfaceMaterial/Outer/Inner.inputs:direction>
+                        float inputs:cycleValue.connect = </World/Looks/InterfaceMaterial/Outer/Inner.inputs:cycleA>
+                        float inputs:unresolvedValue.connect = </World/Looks/InterfaceMaterial/Missing.outputs:out>
+                        vector3f outputs:out
+                        vector3f outputs:resultVector
+                    }
+
+                    def Shader "IllegalSource"
+                    {
+                        uniform token info:id = "ND_illegal_source_float"
+                        float inputs:value = 0.75
+                        float outputs:out
+                    }
+
+                    def Shader "IllegalConsumer"
+                    {
+                        uniform token info:id = "ND_illegal_consumer_float"
+                        float inputs:value.connect = </World/Looks/InterfaceMaterial/Outer/Inner/IllegalSource.inputs:value>
+                        float outputs:out
+                    }
+                }
+            }
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                color3f inputs:base_color.connect = </World/Looks/InterfaceMaterial/Outer/Inner/Mix.outputs:out>
+                vector3f inputs:normal.connect = </World/Looks/InterfaceMaterial/Outer/Inner/InterfaceProbe.outputs:resultVector>
+                token outputs:out
+            }
+        }
+    }
+
+    def Mesh "Triangle" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        rel material:binding = </World/Looks/InterfaceMaterial>
+    }
+}

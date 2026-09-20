@@ -1,0 +1,41 @@
+#usda 1.0
+(
+    startTimeCode = 1
+    endTimeCode = 2
+)
+
+def Xform "World"
+{
+    def Mesh "Mesh"
+    {
+        matrix4d xformOp:transform.timeSamples = {
+            1: ((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (1, 2, 3, 1)),
+            2: ((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (10, 20, 30, 1)),
+        }
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def Camera "Camera"
+    {
+        matrix4d xformOp:transform.timeSamples = {
+            1: ((0, 0, -1, 0), (0, 1, 0, 0), (1, 0, 0, 0), (4, 5, 6, 1)),
+            2: ((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (40, 50, 60, 1)),
+        }
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def DomeLight "Dome"
+    {
+        matrix4d xformOp:transform.timeSamples = {
+            1: ((-0.6427876, 0, 0.7660444, 0), (0, 1, 0, 0), (-0.7660444, 0, -0.6427876, 0), (0, 0, 0, 1)),
+            2: ((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1)),
+        }
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def Xform "Ignored"
+    {
+        double3 xformOp:translate = (7, 8, 9)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

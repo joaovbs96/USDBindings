@@ -1,0 +1,62 @@
+#usda 1.0
+(
+    startTimeCode = 1
+    endTimeCode = 2
+    timeCodesPerSecond = 24
+)
+
+def Xform "World"
+{
+    def Scope "Looks"
+    {
+        def Material "AnimatedMaterial"
+        {
+            color3f inputs:animatedColor.timeSamples = {
+                1: (0.11, 0.22, 0.33),
+                2: (0.77, 0.88, 0.99),
+            }
+            token outputs:mtlx:surface.connect = </World/Looks/AnimatedMaterial/Surface.outputs:out>
+
+            def Shader "Mix"
+            {
+                uniform token info:id = "ND_mix_color3"
+                color3f inputs:bg.connect = </World/Looks/AnimatedMaterial.inputs:animatedColor>
+                color3f inputs:fg = (0.5, 0.5, 0.5)
+                float inputs:mix = 0
+                color3f outputs:out
+            }
+
+            def Shader "NoiseOffset"
+            {
+                uniform token info:id = "ND_noise3d_float"
+                vector3f inputs:offset.timeSamples = {
+                    1: (4.4, 1.0050167, 20),
+                    2: (8.8, 2.25, 40),
+                }
+                float inputs:defaultOnly = 0.375
+                float inputs:sampleOnly.timeSamples = {
+                    1: 0.125,
+                    2: 0.875,
+                }
+                float outputs:out
+            }
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                color3f inputs:base_color.connect = </World/Looks/AnimatedMaterial/Mix.outputs:out>
+                token outputs:out
+            }
+        }
+    }
+
+    def Mesh "Triangle" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        rel material:binding = </World/Looks/AnimatedMaterial>
+    }
+}
